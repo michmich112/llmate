@@ -1,5 +1,5 @@
 .cursor/mcp.json
-.cursor/plans/
+/.cursor/plans/
 
 # Build artifacts
 bin/
@@ -22,5 +22,5 @@ frontend/.svelte-kit/
 .idea/
 .vscode/
 
-# Specs
-spec/
+# Specs (local / agent-only; not versioned)
+/spec/
