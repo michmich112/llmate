@@ -1,1 +1,26 @@
 .cursor/mcp.json
+.cursor/plans/
+
+# Build artifacts
+bin/
+cmd/gateway/frontend_dist/*
+!cmd/gateway/frontend_dist/.gitkeep
+frontend/build/
+frontend/node_modules/
+frontend/.svelte-kit/
+
+# Database
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# Environment
+.env
+
+# IDE
+.idea/
+.vscode/
+
+# Specs
+spec/

@@ -1,0 +1,1 @@
+ALTER TABLE streaming_logs ADD COLUMN body_purged INTEGER NOT NULL DEFAULT 0;

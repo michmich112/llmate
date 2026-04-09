@@ -1,0 +1,2 @@
+-- SQLite does not support DROP COLUMN in older versions; recreate tables without the added columns.
+-- This down migration is provided for reference only and is not applied automatically.
