@@ -5,6 +5,7 @@ on:
   push:
     branches:
       - main
+      - dev # for testing
 
 concurrency:
   group: release-main
@@ -38,60 +39,17 @@ jobs:
           cache: npm
           cache-dependency-path: frontend/package-lock.json
 
-      - name: Install frontend dependencies
-        working-directory: frontend
-        run: npm ci
+      - name: Tests, checks, and production build
+        run: make ci
 
-      - name: Frontend check
-        working-directory: frontend
-        run: npm run check
-
-      - name: Go test
-        run: go test ./...
-
-      - name: Compute next version from commit message
-        id: version
-        env:
-          HEAD_MESSAGE: ${{ github.event.head_commit.message }}
-        run: |
-          set -euo pipefail
-
-          MSG="${HEAD_MESSAGE:-$(git log -1 --pretty=%B "$GITHUB_SHA")}"
-          FIRST=$(printf '%s\n' "$MSG" | head -n1)
-          BUMP=patch
-          if printf '%s\n' "$MSG" | grep -qE '(^|[[:space:]])BREAKING CHANGE:'; then
-            BUMP=major
-          elif printf '%s\n' "$FIRST" | grep -qE '^[a-z]+(\([^)]+\))?!:'; then
-            BUMP=major
-          elif printf '%s\n' "$FIRST" | grep -qE '^feat(\([^)]+\))?:'; then
-            BUMP=minor
-          fi
-
-          LAST=$(git describe --tags --match 'v*' --abbrev=0 2>/dev/null || echo "v0.0.0")
-          VER=${LAST#v}
-          MA=$(echo "$VER" | cut -d. -f1)
-          MI=$(echo "$VER" | cut -d. -f2)
-          PA=$(echo "$VER" | cut -d. -f3)
-          MI=${MI:-0}
-          PA=${PA:-0}
-
-          case "$BUMP" in
-            major)
-              MA=$((MA + 1)); MI=0; PA=0
-              ;;
-            minor)
-              MI=$((MI + 1)); PA=0
-              ;;
-            patch)
-              PA=$((PA + 1))
-              ;;
-          esac
-
-          VERSION="v${MA}.${MI}.${PA}"
-          VERSION_PLAIN="${MA}.${MI}.${PA}"
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "version_plain=$VERSION_PLAIN" >> "$GITHUB_OUTPUT"
-          echo "Computed $VERSION ($BUMP bump) from first line: $FIRST"
+      - name: Next version from git history (conventional commits)
+        id: semver
+        uses: PaulHatch/semantic-version@v5.4.0
+        with:
+          tag_prefix: v
+          major_pattern: "/(^|\\n)BREAKING CHANGE:|^[a-z]+(\\([^)]+\\))?!:/m"
+          minor_pattern: "/^feat(\\([^)]+\\))?:/m"
+          search_commit_body: true
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -102,60 +60,48 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Build Docker image
-        id: build
-        env:
-          VERSION: ${{ steps.version.outputs.version }}
-          VERSION_PLAIN: ${{ steps.version.outputs.version_plain }}
-        run: |
-          set -euo pipefail
-          OWNER="${{ secrets.DOCKERHUB_USERNAME }}"
-          if [ -z "$OWNER" ]; then
-            echo "DOCKERHUB_USERNAME secret is not set" >&2
-            exit 1
-          fi
-          IMAGE="${OWNER}/${DOCKER_IMAGE_NAME}"
-          echo "image=${IMAGE}" >> "$GITHUB_OUTPUT"
-          docker build \
-            -t "${IMAGE}:${VERSION_PLAIN}" \
-            -t "${IMAGE}:${VERSION}" \
-            -t "${IMAGE}:latest" \
-            .
+      - name: Docker image metadata (tags)
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ secrets.DOCKERHUB_USERNAME }}/${{ env.DOCKER_IMAGE_NAME }}
+          tags: |
+            type=raw,value=${{ steps.semver.outputs.version }}
+            type=raw,value=${{ steps.semver.outputs.version_tag }}
+            type=raw,value=latest
 
-      - name: Export image tarball (release artifact)
-        env:
-          VERSION_PLAIN: ${{ steps.version.outputs.version_plain }}
-          IMAGE: ${{ steps.build.outputs.image }}
-        run: |
-          set -euo pipefail
-          docker save "${IMAGE}:${VERSION_PLAIN}" | gzip -1 > "llmate-${VERSION_PLAIN}.tar.gz"
-          ls -la "llmate-${VERSION_PLAIN}.tar.gz"
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
 
-      - name: Push Docker image to Docker Hub
+      - name: Export image tarball for GitHub Release
         env:
-          VERSION: ${{ steps.version.outputs.version }}
-          VERSION_PLAIN: ${{ steps.version.outputs.version_plain }}
-          IMAGE: ${{ steps.build.outputs.image }}
+          VERSION: ${{ steps.semver.outputs.version }}
         run: |
           set -euo pipefail
-          docker push "${IMAGE}:${VERSION_PLAIN}"
-          docker push "${IMAGE}:${VERSION}"
-          docker push "${IMAGE}:latest"
+          IMG="${{ secrets.DOCKERHUB_USERNAME }}/${DOCKER_IMAGE_NAME}:${VERSION}"
+          docker pull "$IMG"
+          docker save "$IMG" | gzip -1 > "llmate-${VERSION}.tar.gz"
+          ls -la "llmate-${VERSION}.tar.gz"
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ steps.version.outputs.version }}
-          name: ${{ steps.version.outputs.version }}
+          tag_name: ${{ steps.semver.outputs.version_tag }}
+          name: ${{ steps.semver.outputs.version_tag }}
           body: |
-            **Docker Hub:** `${{ steps.build.outputs.image }}:${{ steps.version.outputs.version_plain }}`
+            **Docker Hub:** `${{ secrets.DOCKERHUB_USERNAME }}/${{ env.DOCKER_IMAGE_NAME }}:${{ steps.semver.outputs.version }}`
 
             ```bash
-            docker pull ${{ steps.build.outputs.image }}:${{ steps.version.outputs.version_plain }}
+            docker pull ${{ secrets.DOCKERHUB_USERNAME }}/${{ env.DOCKER_IMAGE_NAME }}:${{ steps.semver.outputs.version }}
             ```
 
             Commit: `${{ github.sha }}`
-          files: llmate-${{ steps.version.outputs.version_plain }}.tar.gz
+          files: llmate-${{ steps.semver.outputs.version }}.tar.gz
           generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

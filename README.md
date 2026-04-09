@@ -11,7 +11,7 @@
 - **Circuit breaker per provider** — Transient failures open the circuit, reduce load on bad nodes, and allow half-open retries instead of a single global “up/down” flag.
 - **Background health checks** — Providers are probed on a configurable interval so routing decisions use recent health state.
 - **Admin dashboard** — A Svelte 5 web UI (embedded in the binary) for onboarding providers, editing aliases, and reviewing configuration.
-- **Request analytics** — Proxied calls are logged as **metadata only** (no request/response bodies): timing, tokens, routing, and errors, stored in SQLite for inspection via the admin API.
+- **Request analytics** — Each proxied request is logged in SQLite with routing, timing, token usage, status, and errors. **Request and response body text** can be stored **truncated** (defaults are modest, e.g. tens of KB per side) with limits and retention controlled in **Settings**; streaming responses can optionally record reconstructed text and per-chunk SSE data. This is for operations/debugging—tune or zero out limits if you want metadata-heavy logs only.
 - **Single binary** — The Go server embeds the built frontend; one process, no separate static host required. **Docker** images are supported for production-style deployments.
 
 ---
@@ -25,22 +25,16 @@
 
 ### Run from source
 
+From the repository root, the **Makefile** builds the Svelte app, copies it into `cmd/gateway/frontend_dist/` for `embed`, and compiles a **single binary** at `bin/gateway`.
+
 ```bash
-git clone https://github.com/<your-org>/llmate.git
+git clone https://github.com/michmich112/llmate.git
 cd llmate
 
-# Build the dashboard (output goes to frontend/build, then copied for embed)
-cd frontend && npm ci && npm run build && cd ..
-mkdir -p cmd/gateway/frontend_dist
-cp -r frontend/build/* cmd/gateway/frontend_dist/
-
-# Run the gateway (ACCESS_KEY is required)
-export ACCESS_KEY="change-me"
-export PORT=8080          # optional, default 8080
-export DB_PATH=./llmate.db # optional
-
-go run ./cmd/gateway
+ACCESS_KEY=change-me make run
 ```
+
+`ACCESS_KEY` is required for the dashboard and `/admin/*`. For a quick local run without a prior `make build`, `make dev-backend` runs `go run` with a dev key (see `Makefile`).
 
 Open `http://localhost:8080` and sign in with your `ACCESS_KEY` to use the dashboard. Point OpenAI-compatible clients at `http://localhost:8080` for the proxy API.
 
@@ -81,42 +75,14 @@ Create a `.env` file for local development if your tooling loads it; do **not** 
 ## Development
 
 ```bash
-# Backend
-go test ./...
-go build -o bin/gateway ./cmd/gateway
-
-# Frontend (separate dev server; API calls proxied per project setup)
-cd frontend && npm ci && npm run dev
-```
-
-```bash
-cd frontend && npm run check   # Svelte/TS checks
+make ci          # npm ci + frontend check, go test ./..., then make build
+make test        # Go tests only
+make test-frontend
+make dev-backend # terminal 1: gateway with ACCESS_KEY=dev-key
+make dev-frontend # terminal 2: Vite dev server (see frontend tooling for API proxy)
 ```
 
 See `Context.md` in the repository for architecture, data model, and request flow in more detail.
-
----
-
-## Releases and CI
-
-Pushes to `main` run tests, bump a **semantic version** from the latest `v*` tag and the **latest commit message** (see below), build a Docker image, push `:<version>`, `:v<version>`, and `:latest` to Docker Hub, attach a compressed `docker save` archive to a GitHub Release, and publish the release.
-
-**Version bumps (conventional-style, first line of the commit message):**
-
-| Pattern | Bump |
-|--------|------|
-| `BREAKING CHANGE:` in the message body, or `type!:` / `scope!:` on the first line | **major** |
-| `feat:` or `feat(scope):` | **minor** |
-| Anything else (including `fix:`, `chore:`, or merge commits like `Merge pull request …`) | **patch** |
-
-Squash merges that use a conventional first line (for example `feat: add provider discovery`) behave as expected. Plain merge commits usually produce a **patch** bump unless you edit the merge message.
-
-**Repository secrets for Docker Hub:**
-
-- `DOCKERHUB_USERNAME` — Docker Hub user or organization name (image is `<username>/llmate`).
-- `DOCKERHUB_TOKEN` — [access token](https://docs.docker.com/security/for-developers/access-tokens/) (recommended; do not use your account password in CI).
-
-To use a different image name than `llmate`, change the `DOCKER_IMAGE_NAME` env var in `.github/workflows/release.yml`.
 
 ---
 
