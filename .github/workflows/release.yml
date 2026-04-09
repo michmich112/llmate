@@ -1,0 +1,161 @@
+name: Release
+
+# Merging a PR into `main` creates a `push` event; direct pushes to `main` are covered too.
+on:
+  push:
+    branches:
+      - main
+
+concurrency:
+  group: release-main
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+env:
+  DOCKER_IMAGE_NAME: llmate
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Frontend check
+        working-directory: frontend
+        run: npm run check
+
+      - name: Go test
+        run: go test ./...
+
+      - name: Compute next version from commit message
+        id: version
+        env:
+          HEAD_MESSAGE: ${{ github.event.head_commit.message }}
+        run: |
+          set -euo pipefail
+
+          MSG="${HEAD_MESSAGE:-$(git log -1 --pretty=%B "$GITHUB_SHA")}"
+          FIRST=$(printf '%s\n' "$MSG" | head -n1)
+          BUMP=patch
+          if printf '%s\n' "$MSG" | grep -qE '(^|[[:space:]])BREAKING CHANGE:'; then
+            BUMP=major
+          elif printf '%s\n' "$FIRST" | grep -qE '^[a-z]+(\([^)]+\))?!:'; then
+            BUMP=major
+          elif printf '%s\n' "$FIRST" | grep -qE '^feat(\([^)]+\))?:'; then
+            BUMP=minor
+          fi
+
+          LAST=$(git describe --tags --match 'v*' --abbrev=0 2>/dev/null || echo "v0.0.0")
+          VER=${LAST#v}
+          MA=$(echo "$VER" | cut -d. -f1)
+          MI=$(echo "$VER" | cut -d. -f2)
+          PA=$(echo "$VER" | cut -d. -f3)
+          MI=${MI:-0}
+          PA=${PA:-0}
+
+          case "$BUMP" in
+            major)
+              MA=$((MA + 1)); MI=0; PA=0
+              ;;
+            minor)
+              MI=$((MI + 1)); PA=0
+              ;;
+            patch)
+              PA=$((PA + 1))
+              ;;
+          esac
+
+          VERSION="v${MA}.${MI}.${PA}"
+          VERSION_PLAIN="${MA}.${MI}.${PA}"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "version_plain=$VERSION_PLAIN" >> "$GITHUB_OUTPUT"
+          echo "Computed $VERSION ($BUMP bump) from first line: $FIRST"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build Docker image
+        id: build
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          VERSION_PLAIN: ${{ steps.version.outputs.version_plain }}
+        run: |
+          set -euo pipefail
+          OWNER="${{ secrets.DOCKERHUB_USERNAME }}"
+          if [ -z "$OWNER" ]; then
+            echo "DOCKERHUB_USERNAME secret is not set" >&2
+            exit 1
+          fi
+          IMAGE="${OWNER}/${DOCKER_IMAGE_NAME}"
+          echo "image=${IMAGE}" >> "$GITHUB_OUTPUT"
+          docker build \
+            -t "${IMAGE}:${VERSION_PLAIN}" \
+            -t "${IMAGE}:${VERSION}" \
+            -t "${IMAGE}:latest" \
+            .
+
+      - name: Export image tarball (release artifact)
+        env:
+          VERSION_PLAIN: ${{ steps.version.outputs.version_plain }}
+          IMAGE: ${{ steps.build.outputs.image }}
+        run: |
+          set -euo pipefail
+          docker save "${IMAGE}:${VERSION_PLAIN}" | gzip -1 > "llmate-${VERSION_PLAIN}.tar.gz"
+          ls -la "llmate-${VERSION_PLAIN}.tar.gz"
+
+      - name: Push Docker image to Docker Hub
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          VERSION_PLAIN: ${{ steps.version.outputs.version_plain }}
+          IMAGE: ${{ steps.build.outputs.image }}
+        run: |
+          set -euo pipefail
+          docker push "${IMAGE}:${VERSION_PLAIN}"
+          docker push "${IMAGE}:${VERSION}"
+          docker push "${IMAGE}:latest"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.version }}
+          name: ${{ steps.version.outputs.version }}
+          body: |
+            **Docker Hub:** `${{ steps.build.outputs.image }}:${{ steps.version.outputs.version_plain }}`
+
+            ```bash
+            docker pull ${{ steps.build.outputs.image }}:${{ steps.version.outputs.version_plain }}
+            ```
+
+            Commit: `${{ github.sha }}`
+          files: llmate-${{ steps.version.outputs.version_plain }}.tar.gz
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
