@@ -1,6 +1,18 @@
 # LLMate
 
-**LLMate** (*LLM available to everyone*) is a self-hosted gateway that sits between your applications and local or private LLM backends (vLLM, Ollama, llama.cpp, and similar). It exposes an **OpenAI-compatible HTTP API**, so clients and SDKs built for OpenAI can point at LLMate with minimal or no code changes.
+**LLMate** (*LLM available to everyone*) is a self-hosted **LLM gateway** and **OpenAI-compatible API** proxy for **local LLMs** and private backends (**vLLM**, **Ollama**, **llama.cpp**, and similar). It routes chat, embeddings, images, and audio the way OpenAI-style clients expect (`/v1/*`), with health-aware failover, circuit breaking, SQLite-backed request logs, and a built-in **admin dashboard**.
+
+<p align="center">
+  <a href="docs/assets/llmate-dashboard-screenshot.png">
+    <img
+      src="docs/assets/llmate-dashboard-screenshot.png"
+      alt="LLMate admin dashboard: self-hosted OpenAI-compatible LLM gateway with request logs, providers, and configuration"
+      width="920"
+    />
+  </a>
+  <br />
+  <sub>Web UI embedded in the binary — providers, models, logs, and settings.</sub>
+</p>
 
 ---
 
@@ -88,4 +100,4 @@ See `Context.md` in the repository for architecture, data model, and request flo
 
 ## License
 
-See the repository’s `LICENSE` file (if present) for terms.
+See the repository’s `LICENSE` file for terms.
