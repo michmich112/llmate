@@ -24,11 +24,20 @@ type Handler struct {
 	configHandler *ConfigHandler
 }
 
+// HandlerConfig configures optional admin runtime hooks.
+type HandlerConfig struct {
+	// OnHTTPIdleConnTimeoutSaved is called after http_idle_conn_timeout_seconds is saved to the database.
+	OnHTTPIdleConnTimeoutSaved func(seconds int)
+}
+
 // NewHandler creates a new admin Handler backed by the given store.
-func NewHandler(store db.Store) *Handler {
+func NewHandler(store db.Store, cfg HandlerConfig) *Handler {
 	return &Handler{
-		store:         store,
-		configHandler: NewConfigHandler(store),
+		store: store,
+		configHandler: &ConfigHandler{
+			store:             store,
+			onHTTPIdleSaved:   cfg.OnHTTPIdleConnTimeoutSaved,
+		},
 	}
 }
 

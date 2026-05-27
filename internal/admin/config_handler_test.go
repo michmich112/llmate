@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 
 	"github.com/llmate/gateway/internal/db"
@@ -18,7 +19,7 @@ func TestHandleUpdateConfig_StreamingRetentionDays(t *testing.T) {
 	}
 	t.Cleanup(func() { store.Close() })
 
-	h := NewHandler(store)
+	h := NewHandler(store, HandlerConfig{})
 
 	t.Run("reject zero", func(t *testing.T) {
 		body := []byte(`{"streaming_log_body_retention_days":0}`)
@@ -75,7 +76,7 @@ func TestHandleGetConfig_DefaultRetentionDays(t *testing.T) {
 	}
 	t.Cleanup(func() { store.Close() })
 
-	h := NewHandler(store)
+	h := NewHandler(store, HandlerConfig{})
 	req := httptest.NewRequest(http.MethodGet, "/config", nil)
 	rec := serve(h, req)
 	if rec.Code != http.StatusOK {
@@ -93,5 +94,58 @@ func TestHandleGetConfig_DefaultRetentionDays(t *testing.T) {
 	}
 	if got.ResponseLogBodyRetentionDays != models.DefaultResponseLogBodyRetentionDays {
 		t.Fatalf("default response body retention: got %d want %d", got.ResponseLogBodyRetentionDays, models.DefaultResponseLogBodyRetentionDays)
+	}
+	if got.HTTPIdleConnTimeoutSeconds != models.DefaultHTTPIdleConnTimeoutSeconds {
+		t.Fatalf("default http idle: got %d want %d", got.HTTPIdleConnTimeoutSeconds, models.DefaultHTTPIdleConnTimeoutSeconds)
+	}
+}
+
+func TestHandleUpdateConfig_HTTPIdleConnTimeoutHook(t *testing.T) {
+	store, err := db.NewSQLiteStore(":memory:")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	t.Cleanup(func() { store.Close() })
+
+	var mu sync.Mutex
+	var gotHook int
+	var hookSeen bool
+	h := NewHandler(store, HandlerConfig{
+		OnHTTPIdleConnTimeoutSaved: func(sec int) {
+			mu.Lock()
+			gotHook = sec
+			hookSeen = true
+			mu.Unlock()
+		},
+	})
+
+	body := []byte(`{"http_idle_conn_timeout_seconds":120}`)
+	req := httptest.NewRequest(http.MethodPut, "/config", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := serve(h, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d, body %s", rec.Code, rec.Body.String())
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if !hookSeen || gotHook != 120 {
+		t.Fatalf("hook: seen=%v got=%d", hookSeen, gotHook)
+	}
+}
+
+func TestHandleUpdateConfig_HTTPIdleConnTimeoutValidation(t *testing.T) {
+	store, err := db.NewSQLiteStore(":memory:")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	t.Cleanup(func() { store.Close() })
+
+	h := NewHandler(store, HandlerConfig{})
+	body := []byte(`{"http_idle_conn_timeout_seconds":5}`)
+	req := httptest.NewRequest(http.MethodPut, "/config", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := serve(h, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", rec.Code)
 	}
 }

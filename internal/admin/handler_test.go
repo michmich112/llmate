@@ -237,7 +237,7 @@ func serve(h *Handler, req *http.Request) *httptest.ResponseRecorder {
 
 func TestCreateProvider_Valid(t *testing.T) {
 	store := &mockStore{}
-	h := NewHandler(store)
+	h := NewHandler(store, HandlerConfig{})
 
 	body := `{"name":"Local Ollama","base_url":"http://localhost:11434"}`
 	req := httptest.NewRequest(http.MethodPost, "/providers", strings.NewReader(body))
@@ -265,7 +265,7 @@ func TestCreateProvider_Valid(t *testing.T) {
 }
 
 func TestCreateProvider_MissingName(t *testing.T) {
-	h := NewHandler(&mockStore{})
+	h := NewHandler(&mockStore{}, HandlerConfig{})
 	body := `{"base_url":"http://localhost:11434"}`
 	req := httptest.NewRequest(http.MethodPost, "/providers", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
@@ -277,7 +277,7 @@ func TestCreateProvider_MissingName(t *testing.T) {
 }
 
 func TestCreateProvider_MissingBaseURL(t *testing.T) {
-	h := NewHandler(&mockStore{})
+	h := NewHandler(&mockStore{}, HandlerConfig{})
 	body := `{"name":"Test"}`
 	req := httptest.NewRequest(http.MethodPost, "/providers", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
@@ -307,7 +307,7 @@ func TestGetProvider_OK(t *testing.T) {
 			return []models.ProviderModel{{ID: "m1", ProviderID: "p1", ModelID: "llama3"}}, nil
 		},
 	}
-	h := NewHandler(store)
+	h := NewHandler(store, HandlerConfig{})
 
 	req := httptest.NewRequest(http.MethodGet, "/providers/p1", nil)
 	rec := serve(h, req)
@@ -333,7 +333,7 @@ func TestGetProvider_NotFound(t *testing.T) {
 			return nil, sql.ErrNoRows
 		},
 	}
-	h := NewHandler(store)
+	h := NewHandler(store, HandlerConfig{})
 
 	req := httptest.NewRequest(http.MethodGet, "/providers/nonexistent", nil)
 	rec := serve(h, req)
@@ -346,7 +346,7 @@ func TestGetProvider_NotFound(t *testing.T) {
 func TestDeleteProvider_OK(t *testing.T) {
 	h := NewHandler(&mockStore{
 		deleteProvider: func(_ context.Context, id string) error { return nil },
-	})
+	}, HandlerConfig{})
 	req := httptest.NewRequest(http.MethodDelete, "/providers/p1", nil)
 	rec := serve(h, req)
 
@@ -369,7 +369,7 @@ func TestCreateAlias_Valid(t *testing.T) {
 		},
 		createAlias: func(_ context.Context, a *models.ModelAlias) error { return nil },
 	}
-	h := NewHandler(store)
+	h := NewHandler(store, HandlerConfig{})
 
 	body := `{"alias":"gpt-4","provider_id":"prov1","model_id":"llama3","weight":1,"priority":0}`
 	req := httptest.NewRequest(http.MethodPost, "/aliases", strings.NewReader(body))
@@ -407,7 +407,7 @@ func TestListAliases_OK(t *testing.T) {
 			return expected, nil
 		},
 	}
-	h := NewHandler(store)
+	h := NewHandler(store, HandlerConfig{})
 
 	req := httptest.NewRequest(http.MethodGet, "/aliases", nil)
 	rec := serve(h, req)
@@ -444,7 +444,7 @@ func TestQueryLogs_Filters(t *testing.T) {
 			return []models.RequestLog{}, 0, nil
 		},
 	}
-	h := NewHandler(store)
+	h := NewHandler(store, HandlerConfig{})
 
 	req := httptest.NewRequest(http.MethodGet, "/logs?model=gpt-4&provider_id=prov1", nil)
 	rec := serve(h, req)
@@ -468,7 +468,7 @@ func TestQueryLogs_DefaultPagination(t *testing.T) {
 			return []models.RequestLog{}, 42, nil
 		},
 	}
-	h := NewHandler(store)
+	h := NewHandler(store, HandlerConfig{})
 
 	req := httptest.NewRequest(http.MethodGet, "/logs", nil)
 	rec := serve(h, req)
@@ -496,7 +496,7 @@ func TestQueryLogs_DefaultPagination(t *testing.T) {
 }
 
 func TestQueryLogs_InvalidLimit(t *testing.T) {
-	h := NewHandler(&mockStore{})
+	h := NewHandler(&mockStore{}, HandlerConfig{})
 	req := httptest.NewRequest(http.MethodGet, "/logs?limit=0", nil)
 	rec := serve(h, req)
 	if rec.Code != http.StatusBadRequest {
@@ -525,7 +525,7 @@ func TestGetStats_OK(t *testing.T) {
 			return wantStats, nil
 		},
 	}
-	h := NewHandler(store)
+	h := NewHandler(store, HandlerConfig{})
 
 	req := httptest.NewRequest(http.MethodGet, "/stats?since=24h", nil)
 	rec := serve(h, req)
@@ -550,7 +550,7 @@ func TestGetStats_OK(t *testing.T) {
 }
 
 func TestGetStats_InvalidSince(t *testing.T) {
-	h := NewHandler(&mockStore{})
+	h := NewHandler(&mockStore{}, HandlerConfig{})
 	req := httptest.NewRequest(http.MethodGet, "/stats?since=notaduration", nil)
 	rec := serve(h, req)
 	if rec.Code != http.StatusBadRequest {
@@ -566,7 +566,7 @@ func TestGetStats_DayShorthand(t *testing.T) {
 			return &models.DashboardStats{}, nil
 		},
 	}
-	h := NewHandler(store)
+	h := NewHandler(store, HandlerConfig{})
 
 	before := time.Now().Add(-7 * 24 * time.Hour)
 	req := httptest.NewRequest(http.MethodGet, "/stats?since=7d", nil)

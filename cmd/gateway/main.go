@@ -15,6 +15,7 @@ import (
 	"github.com/llmate/gateway/internal/auth"
 	"github.com/llmate/gateway/internal/config"
 	"github.com/llmate/gateway/internal/db"
+	"github.com/llmate/gateway/internal/httpx"
 	"github.com/llmate/gateway/internal/health"
 	"github.com/llmate/gateway/internal/logretention"
 	"github.com/llmate/gateway/internal/middleware"
@@ -167,25 +168,34 @@ func main() {
 	}
 	logger.Info("database ready", "path", cfg.DBPath)
 
+	bootCtx, bootCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	bootCfg, bootErr := store.GetAllConfig(bootCtx)
+	bootCancel()
+	if bootErr != nil {
+		logger.Warn("failed to read config for outbound HTTP pool; using defaults", "error", bootErr)
+	}
+	idleConnSec := models.HTTPIdleConnTimeoutSecondsFromConfig(bootCfg)
+	outboundPool := httpx.NewPooledClient(time.Duration(idleConnSec) * time.Second)
+	httpClient := outboundPool.Client()
+	logger.Info("outbound HTTP idle connection timeout", "seconds", idleConnSec)
+
 	// 4. Smart router (implements proxy.Router and health.CircuitBreakerReporter).
 	smartRouter := proxy.NewSmartRouter(store)
 
 	// 5. Metrics collector (1024-entry buffer).
 	metricsCollector := NewMetricsCollector(store, 1024)
 
-	// 6. HTTP client with connection-pool settings but no global timeout
-	//    (individual request contexts control per-call deadlines for long LLM calls).
-	httpClient := &http.Client{
-		Transport: &http.Transport{
-			MaxIdleConns:        100,
-			MaxIdleConnsPerHost: 10,
-			IdleConnTimeout:     90 * time.Second,
-		},
-	}
+	// 6. HTTP client: no global Client.Timeout (per-request contexts govern long LLM calls).
+	//    IdleConnTimeout is loaded from DB at boot and when admin config is saved.
 
 	// 7. Handlers.
 	proxyHandler := proxy.NewHandler(smartRouter, metricsCollector, store, httpClient)
-	adminHandler := admin.NewHandler(store)
+	adminHandler := admin.NewHandler(store, admin.HandlerConfig{
+		OnHTTPIdleConnTimeoutSaved: func(sec int) {
+			outboundPool.ApplyIdleConnTimeout(time.Duration(sec) * time.Second)
+			logger.Info("outbound HTTP idle connection timeout updated", "seconds", sec)
+		},
+	})
 	onboardHandler := admin.NewOnboardHandler(store, httpClient)
 
 	// 8. Health checker.
