@@ -2,6 +2,7 @@ package admin
 
 import (
 	"bytes"
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -16,28 +17,42 @@ import (
 	"github.com/llmate/gateway/internal/db"
 	"github.com/llmate/gateway/internal/models"
 	"github.com/llmate/gateway/internal/pricing"
+	"github.com/llmate/gateway/internal/proxy"
+	"github.com/llmate/gateway/internal/stats"
 )
 
 // Handler holds admin API dependencies. The caller must not pass a nil store.
 type Handler struct {
-	store         db.Store
-	configHandler *ConfigHandler
+	store            db.Store
+	configHandler    *ConfigHandler
+	statsAcc         *stats.Accumulator
+	queryWorker      *QueryWorker
+	onRoutingChanged proxy.RoutingChangeNotifier
 }
 
 // HandlerConfig configures optional admin runtime hooks.
 type HandlerConfig struct {
-	// OnHTTPIdleConnTimeoutSaved is called after http_idle_conn_timeout_seconds is saved to the database.
 	OnHTTPIdleConnTimeoutSaved func(seconds int)
+	OnRoutingChanged           proxy.RoutingChangeNotifier
+	OnConfigChanged            func()
 }
 
 // NewHandler creates a new admin Handler backed by the given store.
-func NewHandler(store db.Store, cfg HandlerConfig) *Handler {
+func NewHandler(store db.Store, cfg HandlerConfig, statsAcc *stats.Accumulator, queryWorker *QueryWorker) *Handler {
 	return &Handler{
 		store: store,
 		configHandler: &ConfigHandler{
-			store:             store,
-			onHTTPIdleSaved:   cfg.OnHTTPIdleConnTimeoutSaved,
+			store:           store,
+			onHTTPIdleSaved: cfg.OnHTTPIdleConnTimeoutSaved,
+			onConfigChanged: cfg.OnConfigChanged,
 		},
+		statsAcc: statsAcc, queryWorker: queryWorker, onRoutingChanged: cfg.OnRoutingChanged,
+	}
+}
+
+func (h *Handler) notifyRoutingChanged() {
+	if h.onRoutingChanged != nil {
+		h.onRoutingChanged()
 	}
 }
 
@@ -573,11 +588,26 @@ func (h *Handler) HandleQueryLogs(w http.ResponseWriter, r *http.Request) {
 		filter.StatusMin = 400 // no upper bound — catches all errors
 	}
 
-	logs, total, err := h.store.QueryRequestLogs(r.Context(), filter)
+	val, err := h.queryWorker.Run(r.Context(), func(ctx context.Context, store db.Store) (any, error) {
+		logs, total, err := store.QueryRequestLogs(ctx, filter)
+		if err != nil {
+			return nil, err
+		}
+		return struct {
+			logs  []models.RequestLog
+			total int
+		}{logs: logs, total: total}, nil
+	})
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, "failed to query logs")
 		return
 	}
+	result := val.(struct {
+		logs  []models.RequestLog
+		total int
+	})
+	logs := result.logs
+	total := result.total
 	if logs == nil {
 		logs = []models.RequestLog{}
 	}
@@ -591,7 +621,9 @@ func (h *Handler) HandleGetLog(w http.ResponseWriter, r *http.Request) {
 		respondError(w, http.StatusBadRequest, "id is required")
 		return
 	}
-	log, err := h.store.GetRequestLog(r.Context(), id)
+	val, err := h.queryWorker.Run(r.Context(), func(ctx context.Context, store db.Store) (any, error) {
+		return store.GetRequestLog(ctx, id)
+	})
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			respondError(w, http.StatusNotFound, "log not found")
@@ -600,6 +632,7 @@ func (h *Handler) HandleGetLog(w http.ResponseWriter, r *http.Request) {
 		respondError(w, http.StatusInternalServerError, "failed to get log")
 		return
 	}
+	log := val.(*models.RequestLog)
 	if log.ProviderID != "" && log.ResolvedModel != "" {
 		if pm, perr := h.store.GetProviderModelCosts(r.Context(), log.ProviderID, log.ResolvedModel); perr == nil && pm != nil {
 			b := pricing.ForRequestLog(log, pm)
@@ -668,11 +701,14 @@ func (h *Handler) HandleGetStreamingLogs(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	logs, err := h.store.GetStreamingLogs(r.Context(), id)
+	val, err := h.queryWorker.Run(r.Context(), func(ctx context.Context, store db.Store) (any, error) {
+		return store.GetStreamingLogs(ctx, id)
+	})
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, "failed to get streaming logs")
 		return
 	}
+	logs := val.([]models.StreamingLog)
 	if logs == nil {
 		logs = []models.StreamingLog{}
 	}

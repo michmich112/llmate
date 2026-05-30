@@ -6,11 +6,20 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"sync"
+	"context"
 	"testing"
 
 	"github.com/llmate/gateway/internal/db"
 	"github.com/llmate/gateway/internal/models"
+	"github.com/llmate/gateway/internal/stats"
 )
+
+
+func testAdminHandlerReal(store db.Store, cfg HandlerConfig) *Handler {
+	qw := NewQueryWorker(store, 4)
+	qw.Start(context.Background())
+	return NewHandler(store, cfg, stats.NewAccumulator(), qw)
+}
 
 func TestHandleUpdateConfig_StreamingRetentionDays(t *testing.T) {
 	store, err := db.NewSQLiteStore(":memory:")
@@ -19,7 +28,7 @@ func TestHandleUpdateConfig_StreamingRetentionDays(t *testing.T) {
 	}
 	t.Cleanup(func() { store.Close() })
 
-	h := NewHandler(store, HandlerConfig{})
+	h := testAdminHandlerReal(store, HandlerConfig{})
 
 	t.Run("reject zero", func(t *testing.T) {
 		body := []byte(`{"streaming_log_body_retention_days":0}`)
@@ -76,7 +85,7 @@ func TestHandleGetConfig_DefaultRetentionDays(t *testing.T) {
 	}
 	t.Cleanup(func() { store.Close() })
 
-	h := NewHandler(store, HandlerConfig{})
+	h := testAdminHandlerReal(store, HandlerConfig{})
 	req := httptest.NewRequest(http.MethodGet, "/config", nil)
 	rec := serve(h, req)
 	if rec.Code != http.StatusOK {
@@ -110,7 +119,7 @@ func TestHandleUpdateConfig_HTTPIdleConnTimeoutHook(t *testing.T) {
 	var mu sync.Mutex
 	var gotHook int
 	var hookSeen bool
-	h := NewHandler(store, HandlerConfig{
+	h := testAdminHandlerReal(store, HandlerConfig{
 		OnHTTPIdleConnTimeoutSaved: func(sec int) {
 			mu.Lock()
 			gotHook = sec
@@ -140,7 +149,7 @@ func TestHandleUpdateConfig_HTTPIdleConnTimeoutValidation(t *testing.T) {
 	}
 	t.Cleanup(func() { store.Close() })
 
-	h := NewHandler(store, HandlerConfig{})
+	h := testAdminHandlerReal(store, HandlerConfig{})
 	body := []byte(`{"http_idle_conn_timeout_seconds":5}`)
 	req := httptest.NewRequest(http.MethodPut, "/config", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")

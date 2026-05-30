@@ -11,6 +11,7 @@ import (
 
 	"github.com/llmate/gateway/internal/db"
 	"github.com/llmate/gateway/internal/models"
+	"github.com/llmate/gateway/internal/proxy"
 )
 
 // CircuitBreakerReporter defines the interface for feeding health check results
@@ -23,25 +24,23 @@ type CircuitBreakerReporter interface {
 
 // Checker runs background health checks on all registered providers.
 type Checker struct {
-	store    db.Store
-	breaker  CircuitBreakerReporter
-	client   *http.Client
-	interval time.Duration
-	logger   *slog.Logger
+	store            db.Store
+	breaker          CircuitBreakerReporter
+	client           *http.Client
+	interval         time.Duration
+	logger           *slog.Logger
+	onRoutingChanged proxy.RoutingChangeNotifier
 }
 
 // NewChecker creates a new health checker instance.
 // If client is nil, http.DefaultClient is used.
-func NewChecker(store db.Store, breaker CircuitBreakerReporter, client *http.Client, interval time.Duration, logger *slog.Logger) *Checker {
+func NewChecker(store db.Store, breaker CircuitBreakerReporter, client *http.Client, interval time.Duration, logger *slog.Logger, onRoutingChanged proxy.RoutingChangeNotifier) *Checker {
 	if client == nil {
 		client = http.DefaultClient // use default client if none provided
 	}
 	return &Checker{
-		store:    store,
-		breaker:  breaker,
-		client:   client,
-		interval: interval,
-		logger:   logger,
+		store: store, breaker: breaker, client: client, interval: interval, logger: logger,
+		onRoutingChanged: onRoutingChanged,
 	}
 }
 
@@ -169,5 +168,8 @@ func (c *Checker) updateHealth(providerID string, healthy bool) {
 		c.breaker.ReportSuccess(providerID)
 	} else {
 		c.breaker.ReportFailure(providerID)
+	}
+	if c.onRoutingChanged != nil {
+		c.onRoutingChanged()
 	}
 }

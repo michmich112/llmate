@@ -15,9 +15,9 @@ import (
 )
 
 type ConfigHandler struct {
-	store db.Store
-	// onHTTPIdleSaved is invoked after http_idle_conn_timeout_seconds is persisted (only that key or with other keys in the same PUT).
+	store           db.Store
 	onHTTPIdleSaved func(seconds int)
+	onConfigChanged func()
 }
 
 func (h *ConfigHandler) HandleGetConfig(w http.ResponseWriter, r *http.Request) {

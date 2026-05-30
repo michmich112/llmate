@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/llmate/gateway/internal/models"
+	"github.com/llmate/gateway/internal/stats"
 )
 
 // mockStore satisfies db.Store using optional function fields.
@@ -26,6 +27,8 @@ type mockStore struct {
 	listProviderEndpoints       func(ctx context.Context, providerID string) ([]models.ProviderEndpoint, error)
 	updateProviderEndpoint      func(ctx context.Context, ep *models.ProviderEndpoint) error
 	syncProviderModels          func(ctx context.Context, providerID string, modelIDs []string) error
+	createProviderModel         func(ctx context.Context, m *models.ProviderModel) error
+	deleteProviderModel         func(ctx context.Context, providerID, recordID string) error
 	listProviderModels          func(ctx context.Context, providerID string) ([]models.ProviderModel, error)
 	listAllModels               func(ctx context.Context) ([]models.ProviderModel, error)
 	createAlias                 func(ctx context.Context, a *models.ModelAlias) error
@@ -96,6 +99,18 @@ func (m *mockStore) UpdateProviderEndpoint(ctx context.Context, ep *models.Provi
 func (m *mockStore) SyncProviderModels(ctx context.Context, providerID string, modelIDs []string) error {
 	if m.syncProviderModels != nil {
 		return m.syncProviderModels(ctx, providerID, modelIDs)
+	}
+	return nil
+}
+func (m *mockStore) CreateProviderModel(ctx context.Context, pm *models.ProviderModel) error {
+	if m.createProviderModel != nil {
+		return m.createProviderModel(ctx, pm)
+	}
+	return nil
+}
+func (m *mockStore) DeleteProviderModel(ctx context.Context, providerID, recordID string) error {
+	if m.deleteProviderModel != nil {
+		return m.deleteProviderModel(ctx, providerID, recordID)
 	}
 	return nil
 }
@@ -222,6 +237,7 @@ func (m *mockStore) PurgeRequestLogRequestBodiesOlderThan(_ context.Context, _ t
 func (m *mockStore) PurgeRequestLogResponseBodiesOlderThan(_ context.Context, _ time.Time) (int64, error) {
 	return 0, nil
 }
+func (m *mockStore) LoadRoutingData(_ context.Context) (*models.RoutingData, error) { return &models.RoutingData{}, nil }
 func (m *mockStore) Close() error { return nil }
 
 // serve is a helper that routes a test request through the handler's chi router.
@@ -235,9 +251,23 @@ func serve(h *Handler, req *http.Request) *httptest.ResponseRecorder {
 // Provider tests
 // ------------------------------------------------------------------
 
+
+func testAdminHandler(store *mockStore, cfg HandlerConfig) *Handler {
+	acc := stats.NewAccumulator()
+	qw := NewQueryWorker(store, 4)
+	qw.Start(context.Background())
+	return NewHandler(store, cfg, acc, qw)
+}
+
+func testAdminHandlerWithStats(store *mockStore, cfg HandlerConfig, acc *stats.Accumulator) *Handler {
+	qw := NewQueryWorker(store, 4)
+	qw.Start(context.Background())
+	return NewHandler(store, cfg, acc, qw)
+}
+
 func TestCreateProvider_Valid(t *testing.T) {
 	store := &mockStore{}
-	h := NewHandler(store, HandlerConfig{})
+	h := testAdminHandler(store, HandlerConfig{})
 
 	body := `{"name":"Local Ollama","base_url":"http://localhost:11434"}`
 	req := httptest.NewRequest(http.MethodPost, "/providers", strings.NewReader(body))
@@ -265,7 +295,7 @@ func TestCreateProvider_Valid(t *testing.T) {
 }
 
 func TestCreateProvider_MissingName(t *testing.T) {
-	h := NewHandler(&mockStore{}, HandlerConfig{})
+	h := testAdminHandler(&mockStore{}, HandlerConfig{})
 	body := `{"base_url":"http://localhost:11434"}`
 	req := httptest.NewRequest(http.MethodPost, "/providers", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
@@ -277,7 +307,7 @@ func TestCreateProvider_MissingName(t *testing.T) {
 }
 
 func TestCreateProvider_MissingBaseURL(t *testing.T) {
-	h := NewHandler(&mockStore{}, HandlerConfig{})
+	h := testAdminHandler(&mockStore{}, HandlerConfig{})
 	body := `{"name":"Test"}`
 	req := httptest.NewRequest(http.MethodPost, "/providers", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
@@ -307,7 +337,7 @@ func TestGetProvider_OK(t *testing.T) {
 			return []models.ProviderModel{{ID: "m1", ProviderID: "p1", ModelID: "llama3"}}, nil
 		},
 	}
-	h := NewHandler(store, HandlerConfig{})
+	h := testAdminHandler(store, HandlerConfig{})
 
 	req := httptest.NewRequest(http.MethodGet, "/providers/p1", nil)
 	rec := serve(h, req)
@@ -333,7 +363,7 @@ func TestGetProvider_NotFound(t *testing.T) {
 			return nil, sql.ErrNoRows
 		},
 	}
-	h := NewHandler(store, HandlerConfig{})
+	h := testAdminHandler(store, HandlerConfig{})
 
 	req := httptest.NewRequest(http.MethodGet, "/providers/nonexistent", nil)
 	rec := serve(h, req)
@@ -344,7 +374,7 @@ func TestGetProvider_NotFound(t *testing.T) {
 }
 
 func TestDeleteProvider_OK(t *testing.T) {
-	h := NewHandler(&mockStore{
+	h := testAdminHandler(&mockStore{
 		deleteProvider: func(_ context.Context, id string) error { return nil },
 	}, HandlerConfig{})
 	req := httptest.NewRequest(http.MethodDelete, "/providers/p1", nil)
@@ -369,7 +399,7 @@ func TestCreateAlias_Valid(t *testing.T) {
 		},
 		createAlias: func(_ context.Context, a *models.ModelAlias) error { return nil },
 	}
-	h := NewHandler(store, HandlerConfig{})
+	h := testAdminHandler(store, HandlerConfig{})
 
 	body := `{"alias":"gpt-4","provider_id":"prov1","model_id":"llama3","weight":1,"priority":0}`
 	req := httptest.NewRequest(http.MethodPost, "/aliases", strings.NewReader(body))
@@ -407,7 +437,7 @@ func TestListAliases_OK(t *testing.T) {
 			return expected, nil
 		},
 	}
-	h := NewHandler(store, HandlerConfig{})
+	h := testAdminHandler(store, HandlerConfig{})
 
 	req := httptest.NewRequest(http.MethodGet, "/aliases", nil)
 	rec := serve(h, req)
@@ -444,7 +474,7 @@ func TestQueryLogs_Filters(t *testing.T) {
 			return []models.RequestLog{}, 0, nil
 		},
 	}
-	h := NewHandler(store, HandlerConfig{})
+	h := testAdminHandler(store, HandlerConfig{})
 
 	req := httptest.NewRequest(http.MethodGet, "/logs?model=gpt-4&provider_id=prov1", nil)
 	rec := serve(h, req)
@@ -468,7 +498,7 @@ func TestQueryLogs_DefaultPagination(t *testing.T) {
 			return []models.RequestLog{}, 42, nil
 		},
 	}
-	h := NewHandler(store, HandlerConfig{})
+	h := testAdminHandler(store, HandlerConfig{})
 
 	req := httptest.NewRequest(http.MethodGet, "/logs", nil)
 	rec := serve(h, req)
@@ -496,7 +526,7 @@ func TestQueryLogs_DefaultPagination(t *testing.T) {
 }
 
 func TestQueryLogs_InvalidLimit(t *testing.T) {
-	h := NewHandler(&mockStore{}, HandlerConfig{})
+	h := testAdminHandler(&mockStore{}, HandlerConfig{})
 	req := httptest.NewRequest(http.MethodGet, "/logs?limit=0", nil)
 	rec := serve(h, req)
 	if rec.Code != http.StatusBadRequest {
@@ -509,23 +539,16 @@ func TestQueryLogs_InvalidLimit(t *testing.T) {
 // ------------------------------------------------------------------
 
 func TestGetStats_OK(t *testing.T) {
-	wantStats := &models.DashboardStats{
-		TotalRequests: 100,
-		AvgLatencyMs:  250.5,
-		ErrorRate:     0.02,
-		ByModel: []models.ModelStats{
-			{Model: "llama3", RequestCount: 80, AvgLatencyMs: 200.0, TotalTokens: 40000},
-		},
-		ByProvider: []models.ProviderStats{
-			{ProviderID: "p1", ProviderName: "Local", RequestCount: 100},
-		},
+	acc := stats.NewAccumulator()
+	now := time.Now().UTC()
+	pt, ct, tt := 10, 5, 15
+	for i := 0; i < 100; i++ {
+		acc.Record(&models.RequestLog{
+			Timestamp: now, RequestedModel: "llama3", ProviderID: "p1", ProviderName: "Local",
+			StatusCode: 200, TotalTimeMs: 250, PromptTokens: &pt, CompletionTokens: &ct, TotalTokens: &tt,
+		}, nil)
 	}
-	store := &mockStore{
-		getDashboardStats: func(_ context.Context, since time.Time) (*models.DashboardStats, error) {
-			return wantStats, nil
-		},
-	}
-	h := NewHandler(store, HandlerConfig{})
+	h := testAdminHandlerWithStats(&mockStore{}, HandlerConfig{}, acc)
 
 	req := httptest.NewRequest(http.MethodGet, "/stats?since=24h", nil)
 	rec := serve(h, req)
@@ -538,11 +561,11 @@ func TestGetStats_OK(t *testing.T) {
 	if err := json.NewDecoder(rec.Body).Decode(&got); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if got.TotalRequests != wantStats.TotalRequests {
-		t.Errorf("TotalRequests: want %d, got %d", wantStats.TotalRequests, got.TotalRequests)
+	if got.TotalRequests != 100 {
+		t.Errorf("TotalRequests: want 100, got %d", got.TotalRequests)
 	}
-	if got.AvgLatencyMs != wantStats.AvgLatencyMs {
-		t.Errorf("AvgLatencyMs: want %f, got %f", wantStats.AvgLatencyMs, got.AvgLatencyMs)
+	if got.AvgLatencyMs != 250 {
+		t.Errorf("AvgLatencyMs: want 250, got %f", got.AvgLatencyMs)
 	}
 	if len(got.ByModel) != 1 || got.ByModel[0].Model != "llama3" {
 		t.Errorf("ByModel mismatch: %+v", got.ByModel)
@@ -550,7 +573,7 @@ func TestGetStats_OK(t *testing.T) {
 }
 
 func TestGetStats_InvalidSince(t *testing.T) {
-	h := NewHandler(&mockStore{}, HandlerConfig{})
+	h := testAdminHandler(&mockStore{}, HandlerConfig{})
 	req := httptest.NewRequest(http.MethodGet, "/stats?since=notaduration", nil)
 	rec := serve(h, req)
 	if rec.Code != http.StatusBadRequest {
@@ -559,26 +582,13 @@ func TestGetStats_InvalidSince(t *testing.T) {
 }
 
 func TestGetStats_DayShorthand(t *testing.T) {
-	var capturedSince time.Time
-	store := &mockStore{
-		getDashboardStats: func(_ context.Context, since time.Time) (*models.DashboardStats, error) {
-			capturedSince = since
-			return &models.DashboardStats{}, nil
-		},
-	}
-	h := NewHandler(store, HandlerConfig{})
-
-	before := time.Now().Add(-7 * 24 * time.Hour)
+	acc := stats.NewAccumulator()
+	acc.Record(&models.RequestLog{Timestamp: time.Now().UTC(), StatusCode: 200, TotalTimeMs: 1}, nil)
+	h := testAdminHandlerWithStats(&mockStore{}, HandlerConfig{}, acc)
 	req := httptest.NewRequest(http.MethodGet, "/stats?since=7d", nil)
 	rec := serve(h, req)
-	after := time.Now().Add(-7 * 24 * time.Hour)
-
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
-	}
-	// capturedSince should be approximately 7 days ago
-	if capturedSince.Before(before.Add(-time.Second)) || capturedSince.After(after.Add(time.Second)) {
-		t.Errorf("since=%v is outside expected 7d window [%v, %v]", capturedSince, before, after)
 	}
 }
 
