@@ -8,32 +8,24 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/llmate/gateway/internal/db"
 	"github.com/llmate/gateway/internal/models"
 )
 
-// ErrNoAvailableProvider is returned when no healthy, circuit-open provider
-// can serve the requested model and endpoint.
 var ErrNoAvailableProvider = errors.New("no available provider for model")
 
-// SmartRouter implements Router using alias resolution, circuit breaking,
-// endpoint filtering, and weighted priority-based provider selection.
 type SmartRouter struct {
-	store    db.Store
-	breakers map[string]*CircuitBreaker // keyed by provider ID
+	catalog  *RoutingCatalog
+	breakers map[string]*CircuitBreaker
 	mu       sync.RWMutex
 }
 
-// NewSmartRouter creates a SmartRouter backed by the given Store.
-func NewSmartRouter(store db.Store) *SmartRouter {
+func NewSmartRouter(catalog *RoutingCatalog) *SmartRouter {
 	return &SmartRouter{
-		store:    store,
+		catalog:  catalog,
 		breakers: make(map[string]*CircuitBreaker),
 	}
 }
 
-// getBreaker returns the CircuitBreaker for providerID, creating one if absent.
-// Uses double-checked locking to minimize lock contention.
 func (r *SmartRouter) getBreaker(providerID string) *CircuitBreaker {
 	r.mu.RLock()
 	cb, ok := r.breakers[providerID]
@@ -41,7 +33,6 @@ func (r *SmartRouter) getBreaker(providerID string) *CircuitBreaker {
 	if ok {
 		return cb
 	}
-
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if cb, ok = r.breakers[providerID]; ok {
@@ -52,7 +43,6 @@ func (r *SmartRouter) getBreaker(providerID string) *CircuitBreaker {
 	return cb
 }
 
-// candidate is an internal routing candidate with selection metadata.
 type candidate struct {
 	provider models.Provider
 	modelID  string
@@ -60,38 +50,21 @@ type candidate struct {
 	priority int
 }
 
-// Route selects a backend provider for the given model and endpoint path.
-//
-// Algorithm:
-//  1. Resolve alias → alias candidates or direct GetHealthyProvidersForModel
-//  2. Filter by circuit breaker Allow()
-//  3. Filter by enabled endpoint
-//  4. Group by priority (highest first), take top group
-//  5. Weighted random within top group
 func (r *SmartRouter) Route(ctx context.Context, modelID string, endpointPath string) (*RouteResult, error) {
-	candidates, requestedViaAlias, err := r.resolveCandidates(ctx, modelID)
+	_ = ctx
+	candidates, requestedViaAlias, err := r.resolveCandidates(modelID)
 	if err != nil {
 		return nil, err
 	}
-
-	// Filter: circuit breaker
 	candidates = r.filterByCircuitBreaker(candidates)
-
-	// Filter: enabled endpoint
-	candidates, err = r.filterByEndpoint(ctx, candidates, endpointPath)
-	if err != nil {
-		return nil, err
-	}
-
+	candidates = r.filterByEndpoint(candidates, endpointPath)
 	if len(candidates) == 0 {
 		return nil, ErrNoAvailableProvider
 	}
-
 	selected, err := selectWeightedPriority(candidates)
 	if err != nil {
 		return nil, err
 	}
-
 	targetURL := strings.TrimRight(selected.provider.BaseURL, "/") + "/" + strings.TrimLeft(endpointPath, "/")
 	return &RouteResult{
 		Provider:          selected.provider,
@@ -101,49 +74,22 @@ func (r *SmartRouter) Route(ctx context.Context, modelID string, endpointPath st
 	}, nil
 }
 
-// resolveCandidates builds the initial candidate list via alias or direct lookup.
-// The second return value is true when ResolveAlias returned at least one enabled alias row
-// (routing is alias-based for this client model name).
-func (r *SmartRouter) resolveCandidates(ctx context.Context, modelID string) ([]candidate, bool, error) {
-	aliases, err := r.store.ResolveAlias(ctx, modelID)
-	if err != nil {
-		return nil, false, err
-	}
-
-	if len(aliases) > 0 {
-		var candidates []candidate
-		for _, a := range aliases {
-			provider, lookupErr := r.store.GetProvider(ctx, a.ProviderID)
-			if lookupErr != nil || provider == nil {
-				continue
-			}
-			candidates = append(candidates, candidate{
-				provider: *provider,
-				modelID:  a.ModelID,
-				weight:   a.Weight,
-				priority: a.Priority,
-			})
+func (r *SmartRouter) resolveCandidates(modelID string) ([]candidate, bool, error) {
+	if aliasCands, ok := r.catalog.AliasCandidates(modelID); ok {
+		out := make([]candidate, 0, len(aliasCands))
+		for _, c := range aliasCands {
+			out = append(out, candidate{provider: c.Provider, modelID: c.ModelID, weight: c.Weight, priority: c.Priority})
 		}
-		return candidates, true, nil
+		return out, true, nil
 	}
-
-	providers, err := r.store.GetHealthyProvidersForModel(ctx, modelID)
-	if err != nil {
-		return nil, false, err
+	direct := r.catalog.DirectCandidates(modelID)
+	out := make([]candidate, 0, len(direct))
+	for _, c := range direct {
+		out = append(out, candidate{provider: c.Provider, modelID: c.ModelID, weight: c.Weight, priority: c.Priority})
 	}
-	candidates := make([]candidate, 0, len(providers))
-	for _, p := range providers {
-		candidates = append(candidates, candidate{
-			provider: p,
-			modelID:  modelID,
-			weight:   1,
-			priority: 0,
-		})
-	}
-	return candidates, false, nil
+	return out, false, nil
 }
 
-// filterByCircuitBreaker removes candidates whose breaker does not allow requests.
 func (r *SmartRouter) filterByCircuitBreaker(candidates []candidate) []candidate {
 	out := candidates[:0]
 	for _, c := range candidates {
@@ -154,29 +100,20 @@ func (r *SmartRouter) filterByCircuitBreaker(candidates []candidate) []candidate
 	return out
 }
 
-// filterByEndpoint removes candidates that lack an enabled endpoint for the path.
-func (r *SmartRouter) filterByEndpoint(ctx context.Context, candidates []candidate, endpointPath string) ([]candidate, error) {
+func (r *SmartRouter) filterByEndpoint(candidates []candidate, endpointPath string) []candidate {
 	out := candidates[:0]
 	for _, c := range candidates {
-		ep, err := r.store.GetEnabledEndpoint(ctx, c.provider.ID, endpointPath)
-		if err != nil {
-			return nil, err
-		}
-		if ep != nil {
+		if r.catalog.HasEnabledEndpoint(c.provider.ID, endpointPath) {
 			out = append(out, c)
 		}
 	}
-	return out, nil
+	return out
 }
 
-// selectWeightedPriority picks one candidate from the highest-priority group
-// using weighted random selection.
 func selectWeightedPriority(candidates []candidate) (candidate, error) {
-	// Sort descending by priority
 	sort.Slice(candidates, func(i, j int) bool {
 		return candidates[i].priority > candidates[j].priority
 	})
-
 	topPriority := candidates[0].priority
 	var topGroup []candidate
 	for _, c := range candidates {
@@ -184,8 +121,6 @@ func selectWeightedPriority(candidates []candidate) (candidate, error) {
 			topGroup = append(topGroup, c)
 		}
 	}
-
-	// Collect positive-weight candidates and sum weights
 	var pool []candidate
 	totalWeight := 0
 	for _, c := range topGroup {
@@ -197,7 +132,6 @@ func selectWeightedPriority(candidates []candidate) (candidate, error) {
 	if len(pool) == 0 || totalWeight == 0 {
 		return candidate{}, ErrNoAvailableProvider
 	}
-
 	pick := rand.Intn(totalWeight)
 	cumulative := 0
 	for _, c := range pool {
@@ -206,17 +140,8 @@ func selectWeightedPriority(candidates []candidate) (candidate, error) {
 			return c, nil
 		}
 	}
-
-	// Unreachable under correct arithmetic, but safe fallback
 	return pool[len(pool)-1], nil
 }
 
-// ReportSuccess records a successful request for the given provider.
-func (r *SmartRouter) ReportSuccess(providerID string) {
-	r.getBreaker(providerID).RecordSuccess()
-}
-
-// ReportFailure records a failed request for the given provider.
-func (r *SmartRouter) ReportFailure(providerID string) {
-	r.getBreaker(providerID).RecordFailure()
-}
+func (r *SmartRouter) ReportSuccess(providerID string) { r.getBreaker(providerID).RecordSuccess() }
+func (r *SmartRouter) ReportFailure(providerID string) { r.getBreaker(providerID).RecordFailure() }

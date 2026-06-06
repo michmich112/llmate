@@ -15,11 +15,9 @@ import (
 )
 
 type ConfigHandler struct {
-	store db.Store
-}
-
-func NewConfigHandler(store db.Store) *ConfigHandler {
-	return &ConfigHandler{store: store}
+	store           db.Store
+	onHTTPIdleSaved func(seconds int)
+	onConfigChanged func()
 }
 
 func (h *ConfigHandler) HandleGetConfig(w http.ResponseWriter, r *http.Request) {
@@ -61,6 +59,11 @@ func (h *ConfigHandler) HandleGetConfig(w http.ResponseWriter, r *http.Request) 
 	if val, ok := config["response_log_body_retention_days"]; ok {
 		if v, err := strconv.Atoi(val); err == nil {
 			result.ResponseLogBodyRetentionDays = v
+		}
+	}
+	if val, ok := config["http_idle_conn_timeout_seconds"]; ok {
+		if v, err := strconv.Atoi(val); err == nil {
+			result.HTTPIdleConnTimeoutSeconds = models.ClampHTTPIdleConnTimeoutSeconds(v)
 		}
 	}
 
@@ -157,6 +160,18 @@ func (h *ConfigHandler) HandleUpdateConfig(w http.ResponseWriter, r *http.Reques
 			}
 			config[key] = strconv.Itoa(v)
 
+		case "http_idle_conn_timeout_seconds":
+			var v int
+			if err := json.Unmarshal(raw, &v); err != nil {
+				respondError(w, http.StatusBadRequest, "http_idle_conn_timeout_seconds must be an integer")
+				return
+			}
+			if v < models.MinHTTPIdleConnTimeoutSeconds || v > models.MaxHTTPIdleConnTimeoutSeconds {
+				respondError(w, http.StatusBadRequest, fmt.Sprintf("http_idle_conn_timeout_seconds must be between %d and %d", models.MinHTTPIdleConnTimeoutSeconds, models.MaxHTTPIdleConnTimeoutSeconds))
+				return
+			}
+			config[key] = strconv.Itoa(v)
+
 		default:
 			respondError(w, http.StatusBadRequest, fmt.Sprintf("unknown config key: %s", key))
 			return
@@ -168,6 +183,15 @@ func (h *ConfigHandler) HandleUpdateConfig(w http.ResponseWriter, r *http.Reques
 			respondError(w, http.StatusInternalServerError, "failed to save configuration")
 			return
 		}
+	}
+
+	if raw, had := config["http_idle_conn_timeout_seconds"]; had && h.onHTTPIdleSaved != nil {
+		sec, err := strconv.Atoi(raw)
+		if err != nil {
+			respondError(w, http.StatusInternalServerError, "invalid http_idle_conn_timeout_seconds after save")
+			return
+		}
+		h.onHTTPIdleSaved(sec)
 	}
 
 	purgeCtx, purgeCancel := context.WithTimeout(context.Background(), 5*time.Minute)
@@ -271,6 +295,13 @@ func (h *ConfigHandler) HandleConfigDefinition(w http.ResponseWriter, r *http.Re
 			Min:         intPtr(models.MinStreamingLogBodyRetentionDays),
 			Max:         intPtr(models.MaxStreamingLogBodyRetentionDays),
 			Description: "After this many days, clear the stored response_body field on each request log row (JSON or reconstructed stream text). Independent of streaming chunks and request body retention. Runs daily and immediately when you save.",
+		},
+		"http_idle_conn_timeout_seconds": {
+			Type:        "integer",
+			Default:     models.DefaultHTTPIdleConnTimeoutSeconds,
+			Min:         intPtr(models.MinHTTPIdleConnTimeoutSeconds),
+			Max:         intPtr(models.MaxHTTPIdleConnTimeoutSeconds),
+			Description: "Outbound HTTP client: how long a keep-alive connection may sit idle in the pool before it is closed. Applies to gateway→provider traffic. Loaded at process start and when you save this value (new connections use the updated transport; active requests are not interrupted).",
 		},
 	}
 

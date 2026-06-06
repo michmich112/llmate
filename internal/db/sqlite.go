@@ -40,8 +40,13 @@ func NewSQLiteStore(dbPath string) (*SQLiteStore, error) {
 		return nil, fmt.Errorf("open sqlite: %w", err)
 	}
 
-	// SQLite allows only one concurrent writer; cap connections to prevent locking.
-	db.SetMaxOpenConns(1)
+	// WAL mode allows concurrent readers; cap connections to limit writer contention.
+	db.SetMaxOpenConns(4)
+
+	if _, err := db.Exec("PRAGMA busy_timeout = 5000"); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("set busy_timeout: %w", err)
+	}
 
 	if _, err := db.Exec("PRAGMA foreign_keys = ON"); err != nil {
 		db.Close()

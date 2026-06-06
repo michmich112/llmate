@@ -64,6 +64,12 @@ func (s *routerTestStore) UpdateProviderEndpoint(_ context.Context, _ *models.Pr
 func (s *routerTestStore) SyncProviderModels(_ context.Context, _ string, _ []string) error {
 	return nil
 }
+func (s *routerTestStore) CreateProviderModel(_ context.Context, _ *models.ProviderModel) error {
+	return nil
+}
+func (s *routerTestStore) DeleteProviderModel(_ context.Context, _, _ string) error {
+	return nil
+}
 func (s *routerTestStore) ListProviderModels(_ context.Context, _ string) ([]models.ProviderModel, error) {
 	return nil, nil
 }
@@ -117,6 +123,7 @@ func (s *routerTestStore) PurgeRequestLogResponseBodiesOlderThan(_ context.Conte
 func (s *routerTestStore) UpdateProviderHealth(_ context.Context, _ string, _ bool) error {
 	return nil
 }
+func (s *routerTestStore) LoadRoutingData(_ context.Context) (*models.RoutingData, error) { return &models.RoutingData{}, nil }
 func (s *routerTestStore) Close() error { return nil }
 
 // ---------------------------------------------------------------------------
@@ -133,6 +140,14 @@ func noEndpoint(_ context.Context, _, _ string) (*models.ProviderEndpoint, error
 	return nil, nil
 }
 
+func chatEP(providerID string) models.ProviderEndpoint {
+	return models.ProviderEndpoint{ProviderID: providerID, Path: "/v1/chat/completions", Method: "POST", IsSupported: true, IsEnabled: true}
+}
+
+func routerFrom(data *models.RoutingData) *SmartRouter {
+	return NewSmartRouter(NewRoutingCatalogFromData(data))
+}
+
 func makeProvider(id, name, baseURL string) models.Provider {
 	return models.Provider{ID: id, Name: name, BaseURL: baseURL, IsHealthy: true}
 }
@@ -143,25 +158,11 @@ func makeProvider(id, name, baseURL string) models.Provider {
 
 func TestRouter_AliasResolution(t *testing.T) {
 	provA := makeProvider("prov-a", "Provider A", "https://a.example.com")
-	store := &routerTestStore{
-		resolveAliasFn: func(_ context.Context, alias string) ([]models.ModelAlias, error) {
-			if alias == "fast" {
-				return []models.ModelAlias{
-					{ProviderID: "prov-a", ModelID: "llama-3", Weight: 1, Priority: 0, IsEnabled: true},
-				}, nil
-			}
-			return nil, nil
-		},
-		getProviderFn: func(_ context.Context, id string) (*models.Provider, error) {
-			if id == "prov-a" {
-				return &provA, nil
-			}
-			return nil, nil
-		},
-		getEnabledEndpointFn: alwaysEndpoint,
-	}
-
-	router := NewSmartRouter(store)
+	router := routerFrom(&models.RoutingData{
+		Providers: []models.Provider{provA},
+		Aliases:   []models.ModelAlias{{Alias: "fast", ProviderID: "prov-a", ModelID: "llama-3", Weight: 1, Priority: 0, IsEnabled: true}},
+		Endpoints: []models.ProviderEndpoint{chatEP("prov-a")},
+	})
 	result, err := router.Route(context.Background(), "fast", "/v1/chat/completions")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -186,20 +187,11 @@ func TestRouter_AliasResolution(t *testing.T) {
 
 func TestRouter_DirectModel(t *testing.T) {
 	provA := makeProvider("prov-a", "Provider A", "https://a.example.com")
-	store := &routerTestStore{
-		resolveAliasFn: func(_ context.Context, _ string) ([]models.ModelAlias, error) {
-			return nil, nil // no aliases
-		},
-		getHealthyProvidersFn: func(_ context.Context, modelID string) ([]models.Provider, error) {
-			if modelID == "gpt-4o" {
-				return []models.Provider{provA}, nil
-			}
-			return nil, nil
-		},
-		getEnabledEndpointFn: alwaysEndpoint,
-	}
-
-	router := NewSmartRouter(store)
+	router := routerFrom(&models.RoutingData{
+		Providers: []models.Provider{provA},
+		Models:    []models.ProviderModel{{ProviderID: "prov-a", ModelID: "gpt-4o"}},
+		Endpoints: []models.ProviderEndpoint{chatEP("prov-a")},
+	})
 	result, err := router.Route(context.Background(), "gpt-4o", "/v1/chat/completions")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -223,26 +215,14 @@ func TestRouter_PrioritySelection(t *testing.T) {
 	provLow := makeProvider("prov-low", "Low Priority", "https://low.example.com")
 	provHigh := makeProvider("prov-high", "High Priority", "https://high.example.com")
 
-	store := &routerTestStore{
-		resolveAliasFn: func(_ context.Context, alias string) ([]models.ModelAlias, error) {
-			return []models.ModelAlias{
-				{ProviderID: "prov-low", ModelID: "model-x", Weight: 100, Priority: 1, IsEnabled: true},
-				{ProviderID: "prov-high", ModelID: "model-x", Weight: 1, Priority: 10, IsEnabled: true},
-			}, nil
+	router := routerFrom(&models.RoutingData{
+		Providers: []models.Provider{provLow, provHigh},
+		Aliases: []models.ModelAlias{
+			{Alias: "anything", ProviderID: "prov-low", ModelID: "model-x", Weight: 100, Priority: 1, IsEnabled: true},
+			{Alias: "anything", ProviderID: "prov-high", ModelID: "model-x", Weight: 1, Priority: 10, IsEnabled: true},
 		},
-		getProviderFn: func(_ context.Context, id string) (*models.Provider, error) {
-			switch id {
-			case "prov-low":
-				return &provLow, nil
-			case "prov-high":
-				return &provHigh, nil
-			}
-			return nil, nil
-		},
-		getEnabledEndpointFn: alwaysEndpoint,
-	}
-
-	router := NewSmartRouter(store)
+		Endpoints: []models.ProviderEndpoint{chatEP("prov-low"), chatEP("prov-high")},
+	})
 	// Run many times — high-priority provider must always win regardless of weight
 	for i := 0; i < 50; i++ {
 		result, err := router.Route(context.Background(), "anything", "/v1/chat/completions")
@@ -267,26 +247,14 @@ func TestRouter_WeightedSelection(t *testing.T) {
 	provB := makeProvider("prov-b", "Provider B", "https://b.example.com")
 
 	// Weight 3:1 in favour of prov-a
-	store := &routerTestStore{
-		resolveAliasFn: func(_ context.Context, _ string) ([]models.ModelAlias, error) {
-			return []models.ModelAlias{
-				{ProviderID: "prov-a", ModelID: "m", Weight: 3, Priority: 0, IsEnabled: true},
-				{ProviderID: "prov-b", ModelID: "m", Weight: 1, Priority: 0, IsEnabled: true},
-			}, nil
+	router := routerFrom(&models.RoutingData{
+		Providers: []models.Provider{provA, provB},
+		Aliases: []models.ModelAlias{
+			{Alias: "model", ProviderID: "prov-a", ModelID: "m", Weight: 3, Priority: 0, IsEnabled: true},
+			{Alias: "model", ProviderID: "prov-b", ModelID: "m", Weight: 1, Priority: 0, IsEnabled: true},
 		},
-		getProviderFn: func(_ context.Context, id string) (*models.Provider, error) {
-			switch id {
-			case "prov-a":
-				return &provA, nil
-			case "prov-b":
-				return &provB, nil
-			}
-			return nil, nil
-		},
-		getEnabledEndpointFn: alwaysEndpoint,
-	}
-
-	router := NewSmartRouter(store)
+		Endpoints: []models.ProviderEndpoint{chatEP("prov-a"), chatEP("prov-b")},
+	})
 	counts := map[string]int{}
 	const iterations = 1000
 	for i := 0; i < iterations; i++ {
@@ -315,17 +283,14 @@ func TestRouter_CircuitBreakerFiltering(t *testing.T) {
 	provA := makeProvider("prov-a", "Provider A", "https://a.example.com")
 	provB := makeProvider("prov-b", "Provider B", "https://b.example.com")
 
-	store := &routerTestStore{
-		resolveAliasFn: func(_ context.Context, _ string) ([]models.ModelAlias, error) {
-			return nil, nil
+	router := routerFrom(&models.RoutingData{
+		Providers: []models.Provider{provA, provB},
+		Models: []models.ProviderModel{
+			{ProviderID: "prov-a", ModelID: "model"},
+			{ProviderID: "prov-b", ModelID: "model"},
 		},
-		getHealthyProvidersFn: func(_ context.Context, _ string) ([]models.Provider, error) {
-			return []models.Provider{provA, provB}, nil
-		},
-		getEnabledEndpointFn: alwaysEndpoint,
-	}
-
-	router := NewSmartRouter(store)
+		Endpoints: []models.ProviderEndpoint{chatEP("prov-a"), chatEP("prov-b")},
+	})
 
 	// Trip prov-a's breaker by reporting many failures
 	for i := 0; i < 20; i++ {
@@ -355,22 +320,14 @@ func TestRouter_Failover_MissingEndpoint(t *testing.T) {
 	provA := makeProvider("prov-a", "Provider A", "https://a.example.com")
 	provB := makeProvider("prov-b", "Provider B", "https://b.example.com")
 
-	store := &routerTestStore{
-		resolveAliasFn: func(_ context.Context, _ string) ([]models.ModelAlias, error) {
-			return nil, nil
+	router := routerFrom(&models.RoutingData{
+		Providers: []models.Provider{provA, provB},
+		Models: []models.ProviderModel{
+			{ProviderID: "prov-a", ModelID: "model"},
+			{ProviderID: "prov-b", ModelID: "model"},
 		},
-		getHealthyProvidersFn: func(_ context.Context, _ string) ([]models.Provider, error) {
-			return []models.Provider{provA, provB}, nil
-		},
-		getEnabledEndpointFn: func(_ context.Context, providerID, _ string) (*models.ProviderEndpoint, error) {
-			if providerID == "prov-a" {
-				return nil, nil // no endpoint for prov-a
-			}
-			return endpointOK, nil
-		},
-	}
-
-	router := NewSmartRouter(store)
+		Endpoints: []models.ProviderEndpoint{chatEP("prov-b")},
+	})
 	for i := 0; i < 10; i++ {
 		result, err := router.Route(context.Background(), "model", "/v1/chat/completions")
 		if err != nil {
@@ -387,16 +344,7 @@ func TestRouter_Failover_MissingEndpoint(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestRouter_NoProviders(t *testing.T) {
-	store := &routerTestStore{
-		resolveAliasFn: func(_ context.Context, _ string) ([]models.ModelAlias, error) {
-			return nil, nil
-		},
-		getHealthyProvidersFn: func(_ context.Context, _ string) ([]models.Provider, error) {
-			return nil, nil
-		},
-	}
-
-	router := NewSmartRouter(store)
+	router := routerFrom(&models.RoutingData{})
 	_, err := router.Route(context.Background(), "model", "/v1/chat/completions")
 	if !errors.Is(err, ErrNoAvailableProvider) {
 		t.Fatalf("expected ErrNoAvailableProvider, got %v", err)
@@ -406,17 +354,10 @@ func TestRouter_NoProviders(t *testing.T) {
 // TestRouter_AllProvidersFiltered verifies error when all candidates are filtered out.
 func TestRouter_AllProvidersFiltered(t *testing.T) {
 	provA := makeProvider("prov-a", "Provider A", "https://a.example.com")
-	store := &routerTestStore{
-		resolveAliasFn: func(_ context.Context, _ string) ([]models.ModelAlias, error) {
-			return nil, nil
-		},
-		getHealthyProvidersFn: func(_ context.Context, _ string) ([]models.Provider, error) {
-			return []models.Provider{provA}, nil
-		},
-		getEnabledEndpointFn: noEndpoint, // no endpoints supported
-	}
-
-	router := NewSmartRouter(store)
+	router := routerFrom(&models.RoutingData{
+		Providers: []models.Provider{provA},
+		Models:    []models.ProviderModel{{ProviderID: "prov-a", ModelID: "model"}},
+	})
 	_, err := router.Route(context.Background(), "model", "/v1/chat/completions")
 	if !errors.Is(err, ErrNoAvailableProvider) {
 		t.Fatalf("expected ErrNoAvailableProvider, got %v", err)
@@ -431,23 +372,16 @@ func TestRouter_EndpointFiltering(t *testing.T) {
 	provA := makeProvider("prov-a", "Provider A", "https://a.example.com")
 	provB := makeProvider("prov-b", "Provider B", "https://b.example.com")
 
-	store := &routerTestStore{
-		resolveAliasFn: func(_ context.Context, _ string) ([]models.ModelAlias, error) {
-			return nil, nil
+	router := routerFrom(&models.RoutingData{
+		Providers: []models.Provider{provA, provB},
+		Models: []models.ProviderModel{
+			{ProviderID: "prov-a", ModelID: "embed-model"},
+			{ProviderID: "prov-b", ModelID: "embed-model"},
 		},
-		getHealthyProvidersFn: func(_ context.Context, _ string) ([]models.Provider, error) {
-			return []models.Provider{provA, provB}, nil
-		},
-		getEnabledEndpointFn: func(_ context.Context, providerID, path string) (*models.ProviderEndpoint, error) {
-			// Only prov-b supports /v1/embeddings
-			if providerID == "prov-b" && path == "/v1/embeddings" {
-				return endpointOK, nil
-			}
-			return nil, nil
-		},
-	}
-
-	router := NewSmartRouter(store)
+		Endpoints: []models.ProviderEndpoint{{
+			ProviderID: "prov-b", Path: "/v1/embeddings", Method: "POST", IsSupported: true, IsEnabled: true,
+		}},
+	})
 	result, err := router.Route(context.Background(), "embed-model", "/v1/embeddings")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -475,16 +409,11 @@ func TestRouter_TargetURLConstruction(t *testing.T) {
 
 	for _, tc := range tests {
 		prov := makeProvider("prov-x", "X", tc.baseURL)
-		store := &routerTestStore{
-			resolveAliasFn: func(_ context.Context, _ string) ([]models.ModelAlias, error) {
-				return nil, nil
-			},
-			getHealthyProvidersFn: func(_ context.Context, _ string) ([]models.Provider, error) {
-				return []models.Provider{prov}, nil
-			},
-			getEnabledEndpointFn: alwaysEndpoint,
-		}
-		router := NewSmartRouter(store)
+		router := routerFrom(&models.RoutingData{
+			Providers: []models.Provider{prov},
+			Models:    []models.ProviderModel{{ProviderID: "prov-x", ModelID: "m"}},
+			Endpoints: []models.ProviderEndpoint{chatEP("prov-x")},
+		})
 		result, err := router.Route(context.Background(), "m", tc.endpointPath)
 		if err != nil {
 			t.Errorf("base=%q path=%q: unexpected error: %v", tc.baseURL, tc.endpointPath, err)
@@ -501,7 +430,7 @@ func TestRouter_TargetURLConstruction(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestRouter_ReportSuccessFailureUpdateBreaker(t *testing.T) {
-	router := NewSmartRouter(&routerTestStore{})
+	router := NewSmartRouter(NewRoutingCatalogFromData(&models.RoutingData{}))
 
 	// Repeated failures should eventually trip the breaker
 	for i := 0; i < 20; i++ {

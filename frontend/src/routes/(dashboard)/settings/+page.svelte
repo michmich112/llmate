@@ -41,6 +41,7 @@
   };
 
   const defaultRetentionDays = 30;
+  const defaultHttpIdleSeconds = 90;
 
   let formState = $state<LoggingFormConfig>({ ...defaultLogging });
   let baseline = $state<LoggingFormConfig>({ ...defaultLogging });
@@ -50,6 +51,9 @@
   let retentionRequestBaseline = $state(defaultRetentionDays);
   let retentionResponseDraft = $state(defaultRetentionDays);
   let retentionResponseBaseline = $state(defaultRetentionDays);
+
+  let httpIdleConnTimeoutSeconds = $state(defaultHttpIdleSeconds);
+  let httpIdleBaseline = $state(defaultHttpIdleSeconds);
 
   let configDef = $state<ConfigDefinition | null>(null);
   let isLoading = $state(true);
@@ -75,6 +79,9 @@
 
   const retentionMin = $derived(configDef?.streaming_log_body_retention_days.min ?? 1);
   const retentionMax = $derived(configDef?.streaming_log_body_retention_days.max ?? 3650);
+
+  const httpIdleMin = $derived(configDef?.http_idle_conn_timeout_seconds.min ?? 10);
+  const httpIdleMax = $derived(configDef?.http_idle_conn_timeout_seconds.max ?? 86400);
 
   const retentionDirty = $derived(
     retentionStreamingDraft !== retentionStreamingBaseline ||
@@ -107,6 +114,9 @@
       retentionRequestBaseline = config.request_log_body_retention_days;
       retentionResponseDraft = config.response_log_body_retention_days;
       retentionResponseBaseline = config.response_log_body_retention_days;
+      const idle = config.http_idle_conn_timeout_seconds ?? defaultHttpIdleSeconds;
+      httpIdleConnTimeoutSeconds = idle;
+      httpIdleBaseline = idle;
       configDef = def;
     } catch (err) {
       errorMsg = 'Failed to load configuration';
@@ -117,7 +127,10 @@
   });
 
   function isDirty(): boolean {
-    return JSON.stringify(formState) !== JSON.stringify(baseline);
+    return (
+      JSON.stringify(formState) !== JSON.stringify(baseline) ||
+      Math.floor(Number(httpIdleConnTimeoutSeconds)) !== httpIdleBaseline
+    );
   }
 
   async function handleSubmit() {
@@ -125,7 +138,11 @@
     errorMsg = '';
 
     try {
-      const updated = await api.updateConfig({ ...formState });
+      const idleSec = Math.max(
+        httpIdleMin,
+        Math.min(httpIdleMax, Math.floor(Number(httpIdleConnTimeoutSeconds)))
+      );
+      const updated = await api.updateConfig({ ...formState, http_idle_conn_timeout_seconds: idleSec });
       formState = {
         request_body_max_bytes: updated.request_body_max_bytes,
         response_body_max_bytes: updated.response_body_max_bytes,
@@ -133,6 +150,8 @@
         streaming_buffer_size: updated.streaming_buffer_size
       };
       baseline = { ...formState };
+      httpIdleConnTimeoutSeconds = updated.http_idle_conn_timeout_seconds;
+      httpIdleBaseline = updated.http_idle_conn_timeout_seconds;
       retentionStreamingDraft = updated.streaming_log_body_retention_days;
       retentionStreamingBaseline = updated.streaming_log_body_retention_days;
       retentionRequestDraft = updated.request_log_body_retention_days;
@@ -151,6 +170,7 @@
     retentionStreamingDraft = defaultRetentionDays;
     retentionRequestDraft = defaultRetentionDays;
     retentionResponseDraft = defaultRetentionDays;
+    httpIdleConnTimeoutSeconds = defaultHttpIdleSeconds;
     saveStatus = 'idle';
   }
 
@@ -349,6 +369,43 @@
         </Button>
         <Button variant="outline" onclick={handleReset}>Reset to defaults</Button>
       </div>
+    </CardContent>
+  </Card>
+
+  <Card>
+    <CardContent class="pt-6">
+      <details class="group space-y-4">
+        <summary
+          class="cursor-pointer list-none text-sm font-semibold hover:text-primary flex items-center gap-1 select-none"
+        >
+          <span class="inline-block transition-transform group-open:rotate-90 text-muted-foreground">›</span>
+          Advanced
+        </summary>
+        <div class="space-y-2 pt-4 border-t mt-2">
+          <div class="flex items-center justify-between gap-4">
+            <Label for="http-idle-timeout">HTTP idle connection timeout (seconds)</Label>
+            <span class="text-xs text-muted-foreground whitespace-nowrap">
+              pool: {httpIdleMin}–{httpIdleMax}s
+            </span>
+          </div>
+          <Input
+            id="http-idle-timeout"
+            type="number"
+            min={httpIdleMin}
+            max={httpIdleMax}
+            step={1}
+            bind:value={httpIdleConnTimeoutSeconds}
+            disabled={isLoading || saveStatus === 'saving'}
+          />
+          <p class="text-xs text-muted-foreground leading-relaxed">
+            {configDef?.http_idle_conn_timeout_seconds.description ??
+              'How long outbound keep-alive connections may sit idle before the gateway closes them. Applies to traffic from LLMate to providers. Loaded at startup and when you save; active requests are not cut off.'}
+          </p>
+          {#if Math.floor(Number(httpIdleConnTimeoutSeconds)) !== httpIdleBaseline}
+            <p class="text-xs text-amber-600 font-medium">Unsaved change — use Save configuration on the card above.</p>
+          {/if}
+        </div>
+      </details>
     </CardContent>
   </Card>
 

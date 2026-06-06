@@ -16,23 +16,25 @@ import (
 	"github.com/google/uuid"
 	"github.com/llmate/gateway/internal/db"
 	"github.com/llmate/gateway/internal/models"
+	"github.com/llmate/gateway/internal/proxy"
 )
 
 // OnboardHandler handles provider discovery and confirmation endpoints.
 type OnboardHandler struct {
-	store  db.Store
-	client *http.Client
+	store            db.Store
+	client           *http.Client
+	onRoutingChanged proxy.RoutingChangeNotifier
 	// probeTimeout overrides the per-probe context deadline; zero means 10s (production default).
 	probeTimeout time.Duration
 }
 
 // NewOnboardHandler creates an OnboardHandler. If client is nil a default 30s-timeout
 // client is used for the outer operations (model list fetch).
-func NewOnboardHandler(store db.Store, client *http.Client) *OnboardHandler {
+func NewOnboardHandler(store db.Store, client *http.Client, onRoutingChanged proxy.RoutingChangeNotifier) *OnboardHandler {
 	if client == nil {
 		client = &http.Client{Timeout: 30 * time.Second}
 	}
-	return &OnboardHandler{store: store, client: client}
+	return &OnboardHandler{store: store, client: client, onRoutingChanged: onRoutingChanged}
 }
 
 // discoverEndpoint holds the result for a single endpoint probe.
@@ -202,6 +204,9 @@ func (h *OnboardHandler) HandleConfirm(w http.ResponseWriter, r *http.Request) {
 		providerModels = []models.ProviderModel{}
 	}
 
+	if h.onRoutingChanged != nil {
+		h.onRoutingChanged()
+	}
 	respondJSON(w, http.StatusOK, map[string]interface{}{
 		"provider":  provider,
 		"endpoints": endpoints,

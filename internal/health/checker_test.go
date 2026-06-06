@@ -60,6 +60,8 @@ func (m *mockStore) UpdateProviderEndpoint(_ context.Context, _ *models.Provider
 	return nil
 }
 func (m *mockStore) SyncProviderModels(_ context.Context, _ string, _ []string) error { return nil }
+func (m *mockStore) CreateProviderModel(_ context.Context, _ *models.ProviderModel) error { return nil }
+func (m *mockStore) DeleteProviderModel(_ context.Context, _, _ string) error             { return nil }
 func (m *mockStore) ListProviderModels(_ context.Context, _ string) ([]models.ProviderModel, error) {
 	return nil, nil
 }
@@ -113,6 +115,7 @@ func (m *mockStore) PurgeRequestLogRequestBodiesOlderThan(_ context.Context, _ t
 func (m *mockStore) PurgeRequestLogResponseBodiesOlderThan(_ context.Context, _ time.Time) (int64, error) {
 	return 0, nil
 }
+func (m *mockStore) LoadRoutingData(_ context.Context) (*models.RoutingData, error) { return &models.RoutingData{}, nil }
 func (m *mockStore) Close() error { return nil }
 
 // mockBreaker records ReportSuccess and ReportFailure calls per provider ID.
@@ -186,7 +189,7 @@ func TestCheckAll_SingleProvider(t *testing.T) {
 
 			store := newMockStore([]models.Provider{provider})
 			breaker := newMockBreaker()
-			checker := NewChecker(store, breaker, &http.Client{}, time.Minute, discardLogger())
+			checker := NewChecker(store, breaker, &http.Client{}, time.Minute, discardLogger(), nil)
 
 			checker.checkAll(context.Background())
 
@@ -233,7 +236,7 @@ func TestCheckAll_Unreachable(t *testing.T) {
 
 	store := newMockStore([]models.Provider{provider})
 	breaker := newMockBreaker()
-	checker := NewChecker(store, breaker, &http.Client{}, time.Minute, discardLogger())
+	checker := NewChecker(store, breaker, &http.Client{}, time.Minute, discardLogger(), nil)
 
 	checker.checkAll(context.Background())
 
@@ -282,7 +285,7 @@ func TestCheckAll_ConcurrentProviders(t *testing.T) {
 
 	store := newMockStore(providers)
 	breaker := newMockBreaker()
-	checker := NewChecker(store, breaker, &http.Client{}, time.Minute, discardLogger())
+	checker := NewChecker(store, breaker, &http.Client{}, time.Minute, discardLogger(), nil)
 
 	checker.checkAll(context.Background())
 
@@ -327,7 +330,7 @@ func TestCheckAll_ConcurrentProviders(t *testing.T) {
 func TestCheckAll_ContextCancellation(t *testing.T) {
 	store := newMockStore(nil) // no providers to avoid HTTP requests with cancelled ctx
 	breaker := newMockBreaker()
-	checker := NewChecker(store, breaker, &http.Client{}, time.Minute, discardLogger())
+	checker := NewChecker(store, breaker, &http.Client{}, time.Minute, discardLogger(), nil)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // cancelled before checkAll is called
@@ -368,7 +371,7 @@ func TestCheckProvider_APIKey(t *testing.T) {
 
 	store := newMockStore([]models.Provider{provider})
 	breaker := newMockBreaker()
-	checker := NewChecker(store, breaker, &http.Client{}, time.Minute, discardLogger())
+	checker := NewChecker(store, breaker, &http.Client{}, time.Minute, discardLogger(), nil)
 
 	checker.checkAll(context.Background())
 
