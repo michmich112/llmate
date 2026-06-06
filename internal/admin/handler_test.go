@@ -426,6 +426,124 @@ func TestCreateAlias_Valid(t *testing.T) {
 	}
 }
 
+func TestNotifyRoutingChanged_OnMutations(t *testing.T) {
+	now := time.Now().UTC()
+	enabled := true
+	cases := []struct {
+		name string
+		run  func(h *Handler) *httptest.ResponseRecorder
+	}{
+		{
+			name: "create provider",
+			run: func(h *Handler) *httptest.ResponseRecorder {
+				body := `{"name":"Local","base_url":"http://localhost:11434"}`
+				req := httptest.NewRequest(http.MethodPost, "/providers", strings.NewReader(body))
+				req.Header.Set("Content-Type", "application/json")
+				return serve(h, req)
+			},
+		},
+		{
+			name: "update provider",
+			run: func(h *Handler) *httptest.ResponseRecorder {
+				body := `{"name":"Renamed","base_url":"http://localhost:11434"}`
+				req := httptest.NewRequest(http.MethodPut, "/providers/p1", strings.NewReader(body))
+				req.Header.Set("Content-Type", "application/json")
+				return serve(h, req)
+			},
+		},
+		{
+			name: "delete provider",
+			run: func(h *Handler) *httptest.ResponseRecorder {
+				return serve(h, httptest.NewRequest(http.MethodDelete, "/providers/p1", nil))
+			},
+		},
+		{
+			name: "update endpoint",
+			run: func(h *Handler) *httptest.ResponseRecorder {
+				body := `{"is_enabled":false}`
+				req := httptest.NewRequest(http.MethodPut, "/providers/p1/endpoints/ep1", strings.NewReader(body))
+				req.Header.Set("Content-Type", "application/json")
+				return serve(h, req)
+			},
+		},
+		{
+			name: "create alias",
+			run: func(h *Handler) *httptest.ResponseRecorder {
+				body := `{"alias":"gpt-4","provider_id":"p1","model_id":"llama3"}`
+				req := httptest.NewRequest(http.MethodPost, "/aliases", strings.NewReader(body))
+				req.Header.Set("Content-Type", "application/json")
+				return serve(h, req)
+			},
+		},
+		{
+			name: "update alias",
+			run: func(h *Handler) *httptest.ResponseRecorder {
+				body := `{"weight":5}`
+				req := httptest.NewRequest(http.MethodPut, "/aliases/a1", strings.NewReader(body))
+				req.Header.Set("Content-Type", "application/json")
+				return serve(h, req)
+			},
+		},
+		{
+			name: "delete alias",
+			run: func(h *Handler) *httptest.ResponseRecorder {
+				return serve(h, httptest.NewRequest(http.MethodDelete, "/aliases/a1", nil))
+			},
+		},
+	}
+
+	store := &mockStore{
+		getProvider: func(_ context.Context, id string) (*models.Provider, error) {
+			return &models.Provider{ID: id, Name: "Test", BaseURL: "http://test", CreatedAt: now, UpdatedAt: now}, nil
+		},
+		updateProvider: func(_ context.Context, _ *models.Provider) error { return nil },
+		deleteProvider: func(_ context.Context, _ string) error { return nil },
+		listProviderEndpoints: func(_ context.Context, _ string) ([]models.ProviderEndpoint, error) {
+			return []models.ProviderEndpoint{{ID: "ep1", ProviderID: "p1", Path: "/v1/chat/completions", Method: "POST", IsEnabled: enabled}}, nil
+		},
+		updateProviderEndpoint: func(_ context.Context, _ *models.ProviderEndpoint) error { return nil },
+		createAlias:            func(_ context.Context, _ *models.ModelAlias) error { return nil },
+		listAliases: func(_ context.Context) ([]models.ModelAlias, error) {
+			return []models.ModelAlias{{ID: "a1", Alias: "gpt-4", ProviderID: "p1", ModelID: "llama3", Weight: 1, IsEnabled: true, CreatedAt: now, UpdatedAt: now}}, nil
+		},
+		updateAlias: func(_ context.Context, _ *models.ModelAlias) error { return nil },
+		deleteAlias: func(_ context.Context, _ string) error { return nil },
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var reloads int
+			h := testAdminHandler(store, HandlerConfig{
+				OnRoutingChanged: func() { reloads++ },
+			})
+			rec := tc.run(h)
+			if rec.Code >= 400 {
+				t.Fatalf("unexpected status %d: %s", rec.Code, rec.Body.String())
+			}
+			if reloads != 1 {
+				t.Fatalf("expected 1 routing reload, got %d", reloads)
+			}
+		})
+	}
+}
+
+func TestNotifyRoutingChanged_NotCalledOnValidationError(t *testing.T) {
+	var reloads int
+	h := testAdminHandler(&mockStore{}, HandlerConfig{
+		OnRoutingChanged: func() { reloads++ },
+	})
+	body := `{"base_url":"http://localhost:11434"}`
+	req := httptest.NewRequest(http.MethodPost, "/providers", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := serve(h, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", rec.Code)
+	}
+	if reloads != 0 {
+		t.Fatalf("expected no routing reload on validation error, got %d", reloads)
+	}
+}
+
 func TestListAliases_OK(t *testing.T) {
 	now := time.Now().UTC()
 	expected := []models.ModelAlias{

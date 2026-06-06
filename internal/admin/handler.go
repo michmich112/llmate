@@ -213,6 +213,7 @@ func (h *Handler) HandleCreateProvider(w http.ResponseWriter, r *http.Request) {
 		respondError(w, http.StatusInternalServerError, "failed to create provider")
 		return
 	}
+	h.notifyRoutingChanged()
 	respondJSON(w, http.StatusCreated, map[string]interface{}{"provider": p})
 }
 
@@ -305,6 +306,7 @@ func (h *Handler) HandleUpdateProvider(w http.ResponseWriter, r *http.Request) {
 		respondError(w, http.StatusInternalServerError, "failed to update provider")
 		return
 	}
+	h.notifyRoutingChanged()
 	respondJSON(w, http.StatusOK, map[string]interface{}{"provider": merged})
 }
 
@@ -324,6 +326,7 @@ func (h *Handler) HandleDeleteProvider(w http.ResponseWriter, r *http.Request) {
 		respondError(w, http.StatusInternalServerError, "failed to delete provider")
 		return
 	}
+	h.notifyRoutingChanged()
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -371,6 +374,7 @@ func (h *Handler) HandleUpdateEndpoint(w http.ResponseWriter, r *http.Request) {
 		respondError(w, http.StatusInternalServerError, "failed to update endpoint")
 		return
 	}
+	h.notifyRoutingChanged()
 	respondJSON(w, http.StatusOK, map[string]interface{}{"endpoint": target})
 }
 
@@ -448,6 +452,7 @@ func (h *Handler) HandleCreateAlias(w http.ResponseWriter, r *http.Request) {
 		respondError(w, http.StatusInternalServerError, "failed to create alias")
 		return
 	}
+	h.notifyRoutingChanged()
 	respondJSON(w, http.StatusCreated, map[string]interface{}{"alias": a})
 }
 
@@ -503,6 +508,7 @@ func (h *Handler) HandleUpdateAlias(w http.ResponseWriter, r *http.Request) {
 		respondError(w, http.StatusInternalServerError, "failed to update alias")
 		return
 	}
+	h.notifyRoutingChanged()
 	respondJSON(w, http.StatusOK, map[string]interface{}{"alias": target})
 }
 
@@ -522,6 +528,7 @@ func (h *Handler) HandleDeleteAlias(w http.ResponseWriter, r *http.Request) {
 		respondError(w, http.StatusInternalServerError, "failed to delete alias")
 		return
 	}
+	h.notifyRoutingChanged()
 	w.WriteHeader(http.StatusNoContent)
 }
 
