@@ -82,6 +82,9 @@ type Store interface {
 
 	// --- Routing (hot path, read-only) ---
 
+	// LoadRoutingData returns providers, models, aliases, and endpoints for the in-memory routing catalog.
+	LoadRoutingData(ctx context.Context) (*models.RoutingData, error)
+
 	// GetHealthyProvidersForModel returns all healthy providers that have
 	// the given model_id in their provider_models table.
 	GetHealthyProvidersForModel(ctx context.Context, modelID string) ([]models.Provider, error)

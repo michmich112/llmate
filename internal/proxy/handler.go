@@ -10,14 +10,12 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/url"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
-	"github.com/llmate/gateway/internal/db"
 	"github.com/llmate/gateway/internal/middleware"
 	"github.com/llmate/gateway/internal/models"
 )
@@ -40,34 +38,37 @@ type RouteResult struct {
 	RequestedViaAlias bool
 }
 
+// StreamingLogChunk is one SSE chunk queued for async persistence.
+type StreamingLogChunk struct {
+	Raw   string
+	Delta string
+}
+
 // MetricsCollector persists request logs asynchronously and must not block the proxy hot path.
 type MetricsCollector interface {
 	Record(log *models.RequestLog)
-	// PersistSync writes the log synchronously; required before inserting rows that FK to request_logs.
-	PersistSync(log *models.RequestLog) error
+	RecordStreaming(log *models.RequestLog, chunks []StreamingLogChunk, prefixDropped bool)
 }
 
 // Handler is the main proxy handler that forwards requests to backend LLM providers.
 type Handler struct {
 	router  Router
 	metrics MetricsCollector
-	store   db.Store
+	catalog *RoutingCatalog
+	config  *ConfigSnapshot
 	client  *http.Client
 	logger  *slog.Logger
 }
 
 // NewHandler creates a new Handler. If client is nil, a default client with a 5-minute timeout
 // is used. Production callers should inject a client with appropriate read/write timeouts.
-func NewHandler(router Router, metrics MetricsCollector, store db.Store, client *http.Client) *Handler {
+func NewHandler(router Router, metrics MetricsCollector, catalog *RoutingCatalog, config *ConfigSnapshot, client *http.Client) *Handler {
 	if client == nil {
 		client = &http.Client{Timeout: 5 * time.Minute}
 	}
 	return &Handler{
-		router:  router,
-		metrics: metrics,
-		store:   store,
-		client:  client,
-		logger:  slog.Default(),
+		router: router, metrics: metrics, catalog: catalog, config: config,
+		client: client, logger: slog.Default(),
 	}
 }
 
@@ -439,11 +440,7 @@ func (h *Handler) proxyNonStreaming(w http.ResponseWriter, r *http.Request, body
 		log.TotalTimeMs = int(time.Since(startTime).Milliseconds())
 
 		// Load logging config (fallback to defaults on error)
-		logConfig, configErr := h.store.GetAllConfig(r.Context())
-		if configErr != nil {
-			h.logger.Warn("failed to load logging config, using defaults", "error", configErr)
-			logConfig = map[string]string{}
-		}
+		logConfig := h.config.Get()
 		reqMax := getConfigInt(logConfig, "request_body_max_bytes", models.DefaultRequestBodyMaxBytes)
 		respMax := getConfigInt(logConfig, "response_body_max_bytes", models.DefaultResponseBodyMaxBytes)
 
@@ -758,51 +755,18 @@ type modelObject struct {
 
 // listModelObjects builds a deduplicated, sorted list of model objects from the store.
 // It includes all provider model IDs and all enabled alias names.
-func (h *Handler) listModelObjects(ctx context.Context) ([]modelObject, error) {
-	providerModels, err := h.store.ListAllModels(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("listing models: %w", err)
-	}
-	aliases, err := h.store.ListAliases(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("listing aliases: %w", err)
-	}
-
-	seen := make(map[string]struct{})
-	for _, pm := range providerModels {
-		seen[pm.ModelID] = struct{}{}
-	}
-	for _, a := range aliases {
-		if a.IsEnabled {
-			seen[a.Alias] = struct{}{}
-		}
-	}
-
-	ids := make([]string, 0, len(seen))
-	for id := range seen {
-		ids = append(ids, id)
-	}
-	sort.Strings(ids)
-
+func (h *Handler) listModelObjects() []modelObject {
+	ids := h.catalog.PublicModelIDs()
 	result := make([]modelObject, 0, len(ids))
 	for _, id := range ids {
-		result = append(result, modelObject{
-			ID:      id,
-			Object:  "model",
-			Created: 0,
-			OwnedBy: "llmate",
-		})
+		result = append(result, modelObject{ID: id, Object: "model", Created: 0, OwnedBy: "llmate"})
 	}
-	return result, nil
+	return result
 }
 
 // HandleListModels handles GET /v1/models.
 func (h *Handler) HandleListModels(w http.ResponseWriter, r *http.Request) {
-	objects, err := h.listModelObjects(r.Context())
-	if err != nil {
-		respondError(w, 500, fmt.Sprintf("failed to list models: %v", err))
-		return
-	}
+	objects := h.listModelObjects()
 	respondJSON(w, 200, map[string]interface{}{
 		"object": "list",
 		"data":   objects,
@@ -821,11 +785,7 @@ func (h *Handler) HandleGetModel(w http.ResponseWriter, r *http.Request) {
 		decoded = modelID
 	}
 
-	objects, err := h.listModelObjects(r.Context())
-	if err != nil {
-		respondError(w, 500, fmt.Sprintf("failed to list models: %v", err))
-		return
-	}
+	objects := h.listModelObjects()
 	for _, obj := range objects {
 		if obj.ID == decoded {
 			respondJSON(w, 200, obj)
@@ -844,11 +804,7 @@ func (h *Handler) handleStreamingRequest(w http.ResponseWriter, r *http.Request,
 		return
 	}
 
-	logConfig, configErr := h.store.GetAllConfig(r.Context())
-	if configErr != nil {
-		h.logger.Warn("failed to load logging config, using defaults", "error", configErr)
-		logConfig = map[string]string{}
-	}
+	logConfig := h.config.Get()
 	reqMax := getConfigInt(logConfig, "request_body_max_bytes", models.DefaultRequestBodyMaxBytes)
 
 	log := &models.RequestLog{
@@ -1039,36 +995,12 @@ func (h *Handler) handleStreamingRequest(w http.ResponseWriter, r *http.Request,
 	// streaming_logs FK request_logs(id). The metrics worker may persist the log after this
 	// handler returns, so we must insert the request log before async chunk writes.
 	if len(streamChunks) > 0 {
-		if err := h.metrics.PersistSync(log); err != nil {
-			h.logger.Warn("failed to persist request log before streaming chunks", "error", err)
-			h.metrics.Record(log)
-		} else {
-			dropped := streamChunksPrefixDropped
-			go h.saveStreamingChunks(log.ID, streamChunks, dropped)
+		chunks := make([]StreamingLogChunk, len(streamChunks))
+		for i, ch := range streamChunks {
+			chunks[i] = StreamingLogChunk{Raw: ch.raw, Delta: ch.delta}
 		}
+		h.metrics.RecordStreaming(log, chunks, streamChunksPrefixDropped)
 	} else {
 		h.metrics.Record(log)
-	}
-}
-
-// saveStreamingChunks writes streaming chunks to the database in a background goroutine.
-// If prefixDropped is true, the rolling buffer evicted early SSE lines; the first stored
-// chunk is marked truncated so the UI can warn that the stream start may be missing.
-func (h *Handler) saveStreamingChunks(requestLogID string, chunks []streamBufferEntry, prefixDropped bool) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	for i, ch := range chunks {
-		sl := &models.StreamingLog{
-			RequestLogID: requestLogID,
-			ChunkIndex:   i,
-			Data:         ch.raw,
-			ContentDelta: ch.delta,
-			IsTruncated:  prefixDropped && i == 0,
-			Timestamp:    time.Now().UTC(),
-		}
-		if err := h.store.InsertStreamingLog(ctx, sl); err != nil {
-			h.logger.Warn("failed to save streaming chunk", "error", err, "request_log_id", requestLogID, "chunk_index", i)
-			return
-		}
 	}
 }

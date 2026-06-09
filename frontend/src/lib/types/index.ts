@@ -165,6 +165,8 @@ export interface Configuration {
   response_body_max_bytes: number;
   track_streaming: boolean;
   streaming_buffer_size: number;
+  /** Outbound HTTP keep-alive idle timeout (seconds). Applied at boot and when saved. */
+  http_idle_conn_timeout_seconds: number;
   /** Days to keep full streaming chunk bodies (raw SSE line + text delta). Min 1. */
   streaming_log_body_retention_days: number;
   /** Days to keep request_body text on each request log row. Independent of other retention settings. */
@@ -186,6 +188,7 @@ export interface ConfigDefinition {
   response_body_max_bytes: ConfigField;
   track_streaming: ConfigField;
   streaming_buffer_size: ConfigField;
+  http_idle_conn_timeout_seconds: ConfigField;
   streaming_log_body_retention_days: ConfigField;
   request_log_body_retention_days: ConfigField;
   response_log_body_retention_days: ConfigField;

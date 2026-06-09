@@ -17,6 +17,12 @@ import (
 	"github.com/llmate/gateway/internal/models"
 )
 
+func newTestHandler(router *mockRouter, metrics *mockMetrics) *Handler {
+	cat := NewRoutingCatalogFromData(&models.RoutingData{})
+	cfg := NewConfigSnapshot(&mockStore{})
+	return NewHandler(router, metrics, cat, cfg, nil)
+}
+
 // ---------------------------------------------------------------------------
 // Mock Router
 // ---------------------------------------------------------------------------
@@ -56,7 +62,8 @@ type mockMetrics struct {
 	logs []*models.RequestLog
 }
 
-func (m *mockMetrics) PersistSync(_ *models.RequestLog) error {
+func (m *mockMetrics) RecordStreaming(_ *models.RequestLog, _ []StreamingLogChunk, _ bool) {}
+func (m *mockMetrics) persistSyncRemoved(_ *models.RequestLog) error {
 	return nil
 }
 
@@ -101,6 +108,8 @@ func (s *mockStore) UpdateProviderEndpoint(_ context.Context, _ *models.Provider
 	return nil
 }
 func (s *mockStore) SyncProviderModels(_ context.Context, _ string, _ []string) error { return nil }
+func (s *mockStore) CreateProviderModel(_ context.Context, _ *models.ProviderModel) error { return nil }
+func (s *mockStore) DeleteProviderModel(_ context.Context, _, _ string) error             { return nil }
 func (s *mockStore) ListProviderModels(_ context.Context, _ string) ([]models.ProviderModel, error) {
 	return nil, nil
 }
@@ -159,6 +168,7 @@ func (s *mockStore) PurgeRequestLogResponseBodiesOlderThan(_ context.Context, _ 
 	return 0, nil
 }
 func (s *mockStore) UpdateProviderHealth(_ context.Context, _ string, _ bool) error { return nil }
+func (s *mockStore) LoadRoutingData(_ context.Context) (*models.RoutingData, error) { return &models.RoutingData{}, nil }
 func (s *mockStore) Close() error                                                    { return nil }
 
 // ---------------------------------------------------------------------------
@@ -200,7 +210,7 @@ func TestHandleChatCompletions_NonStreaming(t *testing.T) {
 		},
 	}
 	metrics := &mockMetrics{}
-	h := NewHandler(router, metrics, &mockStore{}, nil)
+	h := newTestHandler(router, metrics)
 
 	body := `{"model":"gpt-4o","messages":[{"role":"user","content":"Hi"}]}`
 	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(body))
@@ -267,7 +277,7 @@ func TestHandleChatCompletions_NonStreaming_AliasRewritesResponseModel(t *testin
 		},
 	}
 	metrics := &mockMetrics{}
-	h := NewHandler(router, metrics, &mockStore{}, nil)
+	h := newTestHandler(router, metrics)
 
 	body := `{"model":"fast","messages":[{"role":"user","content":"Hi"}]}`
 	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(body))
@@ -324,7 +334,7 @@ func TestHandleChatCompletions_Streaming(t *testing.T) {
 		},
 	}
 	metrics := &mockMetrics{}
-	h := NewHandler(router, metrics, &mockStore{}, nil)
+	h := newTestHandler(router, metrics)
 
 	body := `{"model":"gpt-4o","messages":[{"role":"user","content":"Hi"}],"stream":true}`
 	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(body))
@@ -396,7 +406,7 @@ func TestHandleChatCompletions_Streaming_AliasRewritesResponseModel(t *testing.T
 		},
 	}
 	metrics := &mockMetrics{}
-	h := NewHandler(router, metrics, &mockStore{}, nil)
+	h := newTestHandler(router, metrics)
 
 	body := `{"model":"fast","messages":[{"role":"user","content":"Hi"}],"stream":true}`
 	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(body))
@@ -561,7 +571,7 @@ func TestFailover_FirstBackend503_SecondBackend200(t *testing.T) {
 		},
 	}
 	metrics := &mockMetrics{}
-	h := NewHandler(router, metrics, &mockStore{}, nil)
+	h := newTestHandler(router, metrics)
 
 	body := `{"model":"gpt-4o","messages":[]}`
 	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(body))
@@ -599,17 +609,18 @@ func TestFailover_FirstBackend503_SecondBackend200(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestHandleListModels(t *testing.T) {
-	store := &mockStore{
-		allModels: []models.ProviderModel{
+	cat := NewRoutingCatalogFromData(&models.RoutingData{
+		Providers: []models.Provider{{ID: "p1", Name: "p1", IsHealthy: true}},
+		Models: []models.ProviderModel{
 			{ID: "pm1", ProviderID: "p1", ModelID: "gpt-4o"},
 			{ID: "pm2", ProviderID: "p1", ModelID: "gpt-3.5-turbo"},
 		},
-		aliases: []models.ModelAlias{
+		Aliases: []models.ModelAlias{
 			{ID: "a1", Alias: "smart", ModelID: "gpt-4o", ProviderID: "p1", IsEnabled: true},
 			{ID: "a2", Alias: "disabled-alias", ModelID: "gpt-3.5-turbo", ProviderID: "p1", IsEnabled: false},
 		},
-	}
-	h := NewHandler(&mockRouter{}, &mockMetrics{}, store, nil)
+	})
+	h := NewHandler(&mockRouter{}, &mockMetrics{}, cat, NewConfigSnapshot(&mockStore{}), nil)
 
 	req := httptest.NewRequest("GET", "/v1/models", nil)
 	rr := httptest.NewRecorder()
@@ -727,7 +738,7 @@ func TestHandleAudioSpeech_BinaryPassthrough(t *testing.T) {
 		},
 	}
 	metrics := &mockMetrics{}
-	h := NewHandler(router, metrics, &mockStore{}, nil)
+	h := newTestHandler(router, metrics)
 
 	body := `{"model":"tts-1","input":"Hello world","voice":"alloy"}`
 	req := httptest.NewRequest("POST", "/v1/audio/speech", strings.NewReader(body))
@@ -761,12 +772,11 @@ func TestHandleAudioSpeech_BinaryPassthrough(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestHandleGetModel(t *testing.T) {
-	store := &mockStore{
-		allModels: []models.ProviderModel{
-			{ID: "pm1", ProviderID: "p1", ModelID: "gpt-4o"},
-		},
-	}
-	h := NewHandler(&mockRouter{}, &mockMetrics{}, store, nil)
+	cat := NewRoutingCatalogFromData(&models.RoutingData{
+		Providers: []models.Provider{{ID: "p1", Name: "p1", IsHealthy: true}},
+		Models: []models.ProviderModel{{ProviderID: "p1", ModelID: "gpt-4o"}},
+	})
+	h := NewHandler(&mockRouter{}, &mockMetrics{}, cat, NewConfigSnapshot(&mockStore{}), nil)
 
 	r := chi.NewRouter()
 	r.Get("/v1/models/{model}", h.HandleGetModel)
