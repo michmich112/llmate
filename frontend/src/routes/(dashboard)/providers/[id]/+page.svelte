@@ -39,6 +39,19 @@
   let applyLoading = $state(false);
   let applyError = $state<string | null>(null);
 
+  let discoverRetainedModels = $derived(
+    discoverResult
+      ? models
+          .filter((m) => !discoverResult!.models.includes(m.model_id))
+          .map((m) => m.model_id)
+      : []
+  );
+
+  let newModelId = $state('');
+  let addModelLoading = $state(false);
+  let addModelError = $state<string | null>(null);
+  let modelDeletingIds = $state<Set<string>>(new Set());
+
   // Endpoint toggle loading: track by endpoint id
   let endpointTogglingIds = $state<Set<string>>(new Set());
 
@@ -226,6 +239,49 @@
     }
   }
 
+  async function handleAddModel() {
+    if (!provider) return;
+    const modelId = newModelId.trim();
+    if (!modelId) {
+      addModelError = 'Model ID is required';
+      return;
+    }
+    addModelLoading = true;
+    addModelError = null;
+    try {
+      const result = await api.addProviderModel(provider.id, modelId);
+      models = result.models;
+      newModelId = '';
+      result.models.forEach(initCostDraft);
+    } catch (e) {
+      addModelError = e instanceof Error ? e.message : 'Failed to add model';
+    } finally {
+      addModelLoading = false;
+    }
+  }
+
+  async function handleDeleteModel(model: ProviderModel) {
+    if (!provider) return;
+    if (!confirm(`Remove model "${model.model_id}" from this provider?`)) return;
+
+    const newSet = new Set(modelDeletingIds);
+    newSet.add(model.id);
+    modelDeletingIds = newSet;
+    try {
+      const result = await api.deleteProviderModel(provider.id, model.id);
+      models = result.models;
+      const drafts = { ...costDrafts };
+      delete drafts[model.id];
+      costDrafts = drafts;
+    } catch (e) {
+      alert(e instanceof Error ? e.message : 'Failed to delete model');
+    } finally {
+      const s = new Set(modelDeletingIds);
+      s.delete(model.id);
+      modelDeletingIds = s;
+    }
+  }
+
   function statusFromHealthy(isHealthy: boolean): 'healthy' | 'unhealthy' {
     return isHealthy ? 'healthy' : 'unhealthy';
   }
@@ -384,9 +440,31 @@
       <CardHeader>
         <CardTitle>Model Pricing ({models.length})</CardTitle>
       </CardHeader>
-      <CardContent class="p-0">
+      <CardContent class="space-y-4">
+        <div class="flex flex-wrap items-end gap-2 px-6">
+          <div class="min-w-[12rem] flex-1">
+            <label for="new-model-id" class="mb-1 block text-xs font-medium text-muted-foreground">
+              Add model manually
+            </label>
+            <Input
+              id="new-model-id"
+              bind:value={newModelId}
+              placeholder="e.g. llama-3.1-70b"
+              class="font-mono text-xs"
+            />
+          </div>
+          <Button type="button" variant="outline" disabled={addModelLoading} onclick={handleAddModel}>
+            {addModelLoading ? 'Adding…' : 'Add model'}
+          </Button>
+        </div>
+        {#if addModelError}
+          <p class="px-6 text-sm text-destructive">{addModelError}</p>
+        {/if}
+
         {#if models.length === 0}
-          <p class="px-6 py-4 text-sm text-muted-foreground">No models configured. Use Re-discover to add models.</p>
+          <p class="px-6 pb-4 text-sm text-muted-foreground">
+            No models configured. Use Re-discover or add a model ID manually.
+          </p>
         {:else}
           <div class="overflow-x-auto">
             <table class="w-full text-sm">
@@ -438,14 +516,25 @@
                         {#if costErrors[model.id]}
                           <span class="block text-xs text-destructive mb-1">{costErrors[model.id]}</span>
                         {/if}
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          disabled={costSavingIds.has(model.id)}
-                          onclick={() => handleSaveCosts(model)}
-                        >
-                          {costSavingIds.has(model.id) ? 'Saving…' : 'Save'}
-                        </Button>
+                        <div class="flex flex-wrap gap-2">
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            disabled={costSavingIds.has(model.id)}
+                            onclick={() => handleSaveCosts(model)}
+                          >
+                            {costSavingIds.has(model.id) ? 'Saving…' : 'Save'}
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            class="text-destructive hover:text-destructive"
+                            disabled={modelDeletingIds.has(model.id)}
+                            onclick={() => handleDeleteModel(model)}
+                          >
+                            {modelDeletingIds.has(model.id) ? 'Removing…' : 'Remove'}
+                          </Button>
+                        </div>
                       </td>
                     {:else}
                       <td colspan="5" class="px-4 py-2 text-xs text-muted-foreground">—</td>
@@ -456,7 +545,7 @@
             </table>
           </div>
           <p class="px-4 py-2 text-xs text-muted-foreground border-t">
-            Leave fields blank to omit a cost component. Costs are used to compute estimated spend per request.
+            Leave fields blank to omit a cost component. Re-discover adds new models without removing existing ones.
           </p>
         {/if}
       </CardContent>
@@ -528,8 +617,21 @@
         </div>
       {:else if discoverResult}
         <div class="space-y-4 text-sm">
+          {#if discoverRetainedModels.length > 0}
+            <div class="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 dark:border-amber-900 dark:bg-amber-950/40">
+              <h3 class="mb-1 font-medium">Retained models ({discoverRetainedModels.length})</h3>
+              <p class="mb-2 text-xs text-muted-foreground">
+                Configured models not returned by discovery will be kept with their pricing.
+              </p>
+              <ul class="space-y-1">
+                {#each discoverRetainedModels as modelId}
+                  <li class="font-mono text-xs">{modelId}</li>
+                {/each}
+              </ul>
+            </div>
+          {/if}
           <div>
-            <h3 class="mb-2 font-medium">Models ({discoverResult.models.length})</h3>
+            <h3 class="mb-2 font-medium">Discovered models ({discoverResult.models.length})</h3>
             {#if discoverResult.models.length === 0}
               <p class="text-muted-foreground">No models found.</p>
             {:else}

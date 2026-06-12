@@ -82,6 +82,8 @@ func (h *Handler) Routes() chi.Router {
 	r.Get("/logs/{id}/streaming", h.HandleGetStreamingLogs)
 
 	r.Put("/providers/{id}/models/{mid}", h.HandleUpdateProviderModel)
+	r.Post("/providers/{id}/models", h.HandleAddProviderModel)
+	r.Delete("/providers/{id}/models/{mid}", h.HandleDeleteProviderModel)
 
 	r.Get("/config", h.configHandler.HandleGetConfig)
 	r.Put("/config", h.configHandler.HandleUpdateConfig)
@@ -699,6 +701,99 @@ func (h *Handler) HandleUpdateProviderModel(w http.ResponseWriter, r *http.Reque
 		providerModels = []models.ProviderModel{}
 	}
 	respondJSON(w, http.StatusOK, map[string]interface{}{"models": providerModels})
+	h.notifyRoutingChanged()
+}
+
+// HandleAddProviderModel registers a model ID for a provider without running discovery.
+func (h *Handler) HandleAddProviderModel(w http.ResponseWriter, r *http.Request) {
+	providerID := chi.URLParam(r, "id")
+	if providerID == "" {
+		respondError(w, http.StatusBadRequest, "provider id is required")
+		return
+	}
+
+	if _, err := h.store.GetProvider(r.Context(), providerID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			respondError(w, http.StatusNotFound, "provider not found")
+			return
+		}
+		respondError(w, http.StatusInternalServerError, "failed to get provider")
+		return
+	}
+
+	var body struct {
+		ModelID string `json:"model_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		respondError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	modelID := strings.TrimSpace(body.ModelID)
+	if modelID == "" {
+		respondError(w, http.StatusBadRequest, "model_id is required")
+		return
+	}
+
+	if existing, err := h.store.GetProviderModelCosts(r.Context(), providerID, modelID); err != nil {
+		respondError(w, http.StatusInternalServerError, "failed to check existing model")
+		return
+	} else if existing != nil {
+		respondError(w, http.StatusConflict, "model already configured for this provider")
+		return
+	}
+
+	now := time.Now().UTC()
+	pm := &models.ProviderModel{
+		ID:         uuid.NewString(),
+		ProviderID: providerID,
+		ModelID:    modelID,
+		CreatedAt:  now,
+	}
+	if err := h.store.CreateProviderModel(r.Context(), pm); err != nil {
+		respondError(w, http.StatusInternalServerError, "failed to add model")
+		return
+	}
+
+	providerModels, err := h.store.ListProviderModels(r.Context(), providerID)
+	if err != nil {
+		respondError(w, http.StatusInternalServerError, "failed to list models")
+		return
+	}
+	if providerModels == nil {
+		providerModels = []models.ProviderModel{}
+	}
+	respondJSON(w, http.StatusCreated, map[string]interface{}{"models": providerModels})
+	h.notifyRoutingChanged()
+}
+
+// HandleDeleteProviderModel removes a configured model from a provider.
+func (h *Handler) HandleDeleteProviderModel(w http.ResponseWriter, r *http.Request) {
+	providerID := chi.URLParam(r, "id")
+	modelRecordID := chi.URLParam(r, "mid")
+	if providerID == "" || modelRecordID == "" {
+		respondError(w, http.StatusBadRequest, "provider id and model id are required")
+		return
+	}
+
+	if err := h.store.DeleteProviderModel(r.Context(), providerID, modelRecordID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			respondError(w, http.StatusNotFound, "model not found")
+			return
+		}
+		respondError(w, http.StatusInternalServerError, "failed to delete model")
+		return
+	}
+
+	providerModels, err := h.store.ListProviderModels(r.Context(), providerID)
+	if err != nil {
+		respondError(w, http.StatusInternalServerError, "failed to list models")
+		return
+	}
+	if providerModels == nil {
+		providerModels = []models.ProviderModel{}
+	}
+	respondJSON(w, http.StatusOK, map[string]interface{}{"models": providerModels})
+	h.notifyRoutingChanged()
 }
 
 func (h *Handler) HandleGetStreamingLogs(w http.ResponseWriter, r *http.Request) {

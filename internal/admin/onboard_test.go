@@ -389,6 +389,76 @@ func TestHandleConfirm_Persists(t *testing.T) {
 	}
 }
 
+func TestMergeProviderModelIDs(t *testing.T) {
+	merged := mergeProviderModelIDs(
+		[]string{"model-b"},
+		[]models.ProviderModel{
+			{ModelID: "model-a"},
+			{ModelID: "model-c"},
+		},
+	)
+	if len(merged) != 3 {
+		t.Fatalf("expected 3 merged model IDs, got %v", merged)
+	}
+	want := map[string]bool{"model-a": true, "model-b": true, "model-c": true}
+	for _, id := range merged {
+		if !want[id] {
+			t.Errorf("unexpected merged model ID %q", id)
+		}
+	}
+}
+
+func TestHandleConfirm_PreservesExistingModels(t *testing.T) {
+	now := time.Now().UTC()
+	prov := &models.Provider{ID: "prov-1", Name: "Test", BaseURL: "http://localhost", CreatedAt: now, UpdatedAt: now}
+
+	var capturedModelIDs []string
+
+	store := &mockStore{
+		getProvider: func(_ context.Context, id string) (*models.Provider, error) {
+			return prov, nil
+		},
+		upsertProviderEndpoints: func(_ context.Context, _ string, _ []models.ProviderEndpoint) error {
+			return nil
+		},
+		syncProviderModels: func(_ context.Context, _ string, modelIDs []string) error {
+			capturedModelIDs = modelIDs
+			return nil
+		},
+		listProviderModels: func(_ context.Context, _ string) ([]models.ProviderModel, error) {
+			return []models.ProviderModel{
+				{ID: "pm-retired", ProviderID: "prov-1", ModelID: "retired-model", CreatedAt: now},
+			}, nil
+		},
+		listProviderEndpoints: func(_ context.Context, _ string) ([]models.ProviderEndpoint, error) {
+			return []models.ProviderEndpoint{}, nil
+		},
+	}
+
+	h := &OnboardHandler{store: store, client: &http.Client{}}
+
+	body := `{"endpoints":[],"models":["new-model"]}`
+	req := httptest.NewRequest(http.MethodPost, "/providers/prov-1/confirm", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	newOnboardRouter(h).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", rr.Code, rr.Body.String())
+	}
+
+	if len(capturedModelIDs) != 2 {
+		t.Fatalf("synced model IDs = %v, want new-model and retired-model", capturedModelIDs)
+	}
+	seen := map[string]bool{}
+	for _, id := range capturedModelIDs {
+		seen[id] = true
+	}
+	if !seen["new-model"] || !seen["retired-model"] {
+		t.Errorf("synced model IDs = %v, want new-model and retired-model preserved", capturedModelIDs)
+	}
+}
+
 // TestHandleConfirm_InvalidBody verifies that a malformed request body returns 400.
 func TestHandleConfirm_InvalidBody(t *testing.T) {
 	store := &mockStore{

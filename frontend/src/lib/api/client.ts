@@ -218,6 +218,25 @@ class ApiClient {
     );
   }
 
+  async addProviderModel(
+    providerId: string,
+    modelId: string
+  ): Promise<{ models: ProviderModel[] }> {
+    return this.request<{ models: ProviderModel[] }>('POST', `/providers/${providerId}/models`, {
+      model_id: modelId
+    });
+  }
+
+  async deleteProviderModel(
+    providerId: string,
+    modelRecordId: string
+  ): Promise<{ models: ProviderModel[] }> {
+    return this.request<{ models: ProviderModel[] }>(
+      'DELETE',
+      `/providers/${providerId}/models/${modelRecordId}`
+    );
+  }
+
   async getConfig(): Promise<Configuration> {
     return this.request<Configuration>('GET', '/config');
   }

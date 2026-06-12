@@ -44,9 +44,8 @@ func scanProviderModel(scan func(...any) error) (models.ProviderModel, error) {
 	return m, nil
 }
 
-// SyncProviderModels reconciles the provider's model list without touching cost columns.
-// New models are inserted; models absent from modelIDs are removed.
-// Existing records are left untouched so configured pricing is preserved across re-onboarding.
+// SyncProviderModels inserts model IDs that are not yet registered for the provider.
+// Existing records and their cost columns are never modified or removed.
 func (s *SQLiteStore) SyncProviderModels(ctx context.Context, providerID string, modelIDs []string) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -56,6 +55,9 @@ func (s *SQLiteStore) SyncProviderModels(ctx context.Context, providerID string,
 
 	now := time.Now().UTC()
 	for _, modelID := range modelIDs {
+		if modelID == "" {
+			continue
+		}
 		_, err := tx.ExecContext(ctx,
 			`INSERT OR IGNORE INTO provider_models (id, provider_id, model_id, created_at) VALUES (?, ?, ?, ?)`,
 			uuid.NewString(), providerID, modelID, now,
@@ -65,27 +67,40 @@ func (s *SQLiteStore) SyncProviderModels(ctx context.Context, providerID string,
 		}
 	}
 
-	// Build a placeholder list to delete models no longer in the set.
-	if len(modelIDs) == 0 {
-		if _, err := tx.ExecContext(ctx, `DELETE FROM provider_models WHERE provider_id = ?`, providerID); err != nil {
-			return fmt.Errorf("sync provider models delete all: %w", err)
-		}
-	} else {
-		placeholders := strings.Repeat("?,", len(modelIDs))
-		placeholders = placeholders[:len(placeholders)-1]
-		args := make([]interface{}, 0, len(modelIDs)+1)
-		args = append(args, providerID)
-		for _, id := range modelIDs {
-			args = append(args, id)
-		}
-		q := `DELETE FROM provider_models WHERE provider_id = ? AND model_id NOT IN (` + placeholders + `)`
-		if _, err := tx.ExecContext(ctx, q, args...); err != nil {
-			return fmt.Errorf("sync provider models delete stale: %w", err)
-		}
-	}
-
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("sync provider models commit: %w", err)
+	}
+	return nil
+}
+
+func (s *SQLiteStore) CreateProviderModel(ctx context.Context, m *models.ProviderModel) error {
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO provider_models (id, provider_id, model_id, created_at) VALUES (?, ?, ?, ?)`,
+		m.ID, m.ProviderID, m.ModelID, m.CreatedAt,
+	)
+	if err != nil {
+		if strings.Contains(err.Error(), "UNIQUE constraint failed") {
+			return fmt.Errorf("create provider model: model %q already exists for provider: %w", m.ModelID, err)
+		}
+		return fmt.Errorf("create provider model: %w", err)
+	}
+	return nil
+}
+
+func (s *SQLiteStore) DeleteProviderModel(ctx context.Context, providerID, recordID string) error {
+	res, err := s.db.ExecContext(ctx,
+		`DELETE FROM provider_models WHERE id = ? AND provider_id = ?`,
+		recordID, providerID,
+	)
+	if err != nil {
+		return fmt.Errorf("delete provider model: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("delete provider model rows affected: %w", err)
+	}
+	if n == 0 {
+		return fmt.Errorf("delete provider model: no rows for id %s: %w", recordID, sql.ErrNoRows)
 	}
 	return nil
 }

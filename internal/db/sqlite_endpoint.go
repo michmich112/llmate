@@ -18,13 +18,13 @@ func (s *SQLiteStore) UpsertProviderEndpoints(ctx context.Context, providerID st
 	}
 	defer tx.Rollback() //nolint:errcheck
 
-	if _, err := tx.ExecContext(ctx, `DELETE FROM provider_endpoints WHERE provider_id = ?`, providerID); err != nil {
-		return fmt.Errorf("upsert provider endpoints delete: %w", err)
-	}
 	for _, ep := range eps {
 		_, err := tx.ExecContext(ctx,
 			`INSERT INTO provider_endpoints (id, provider_id, path, method, is_supported, is_enabled, created_at)
-			 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+			 VALUES (?, ?, ?, ?, ?, ?, ?)
+			 ON CONFLICT(provider_id, path, method) DO UPDATE SET
+			   is_supported = excluded.is_supported,
+			   is_enabled = excluded.is_enabled`,
 			ep.ID, providerID, ep.Path, ep.Method, ep.IsSupported, ep.IsEnabled, ep.CreatedAt,
 		)
 		if err != nil {
