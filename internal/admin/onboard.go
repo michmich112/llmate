@@ -193,6 +193,11 @@ func (h *OnboardHandler) HandleConfirm(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if err := h.store.SetProviderModelsAvailability(r.Context(), provider.ID, body.Models); err != nil {
+		respondError(w, http.StatusInternalServerError, "failed to update model availability")
+		return
+	}
+
 	endpoints, err := h.store.ListProviderEndpoints(r.Context(), provider.ID)
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, "failed to list endpoints")

@@ -13,7 +13,7 @@ import (
 	"github.com/llmate/gateway/internal/models"
 )
 
-const providerModelCols = `id, provider_id, model_id, created_at,
+const providerModelCols = `id, provider_id, model_id, created_at, is_available,
 	cost_per_million_input, cost_per_million_output,
 	cost_per_million_cache_read, cost_per_million_cache_write`
 
@@ -22,7 +22,7 @@ func scanProviderModel(scan func(...any) error) (models.ProviderModel, error) {
 	var costIn, costOut, costCacheRead, costCacheWrite sql.NullFloat64
 	var createdAt timeScanner
 	err := scan(
-		&m.ID, &m.ProviderID, &m.ModelID, &createdAt,
+		&m.ID, &m.ProviderID, &m.ModelID, &createdAt, &m.IsAvailable,
 		&costIn, &costOut, &costCacheRead, &costCacheWrite,
 	)
 	if err != nil {
@@ -59,7 +59,7 @@ func (s *SQLiteStore) SyncProviderModels(ctx context.Context, providerID string,
 			continue
 		}
 		_, err := tx.ExecContext(ctx,
-			`INSERT OR IGNORE INTO provider_models (id, provider_id, model_id, created_at) VALUES (?, ?, ?, ?)`,
+			`INSERT OR IGNORE INTO provider_models (id, provider_id, model_id, created_at, is_available) VALUES (?, ?, ?, ?, 0)`,
 			uuid.NewString(), providerID, modelID, now,
 		)
 		if err != nil {
@@ -75,8 +75,8 @@ func (s *SQLiteStore) SyncProviderModels(ctx context.Context, providerID string,
 
 func (s *SQLiteStore) CreateProviderModel(ctx context.Context, m *models.ProviderModel) error {
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO provider_models (id, provider_id, model_id, created_at) VALUES (?, ?, ?, ?)`,
-		m.ID, m.ProviderID, m.ModelID, m.CreatedAt,
+		`INSERT INTO provider_models (id, provider_id, model_id, created_at, is_available) VALUES (?, ?, ?, ?, ?)`,
+		m.ID, m.ProviderID, m.ModelID, m.CreatedAt, m.IsAvailable,
 	)
 	if err != nil {
 		if strings.Contains(err.Error(), "UNIQUE constraint failed") {
@@ -101,6 +101,56 @@ func (s *SQLiteStore) DeleteProviderModel(ctx context.Context, providerID, recor
 	}
 	if n == 0 {
 		return fmt.Errorf("delete provider model: no rows for id %s: %w", recordID, sql.ErrNoRows)
+	}
+	return nil
+}
+
+func (s *SQLiteStore) SetProviderModelsAvailability(ctx context.Context, providerID string, availableModelIDs []string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("set provider models availability begin tx: %w", err)
+	}
+	defer tx.Rollback() //nolint:errcheck
+
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE provider_models SET is_available = 0 WHERE provider_id = ?`,
+		providerID,
+	); err != nil {
+		return fmt.Errorf("set provider models availability clear: %w", err)
+	}
+
+	for _, modelID := range availableModelIDs {
+		if modelID == "" {
+			continue
+		}
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE provider_models SET is_available = 1 WHERE provider_id = ? AND model_id = ?`,
+			providerID, modelID,
+		); err != nil {
+			return fmt.Errorf("set provider models availability enable: %w", err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("set provider models availability commit: %w", err)
+	}
+	return nil
+}
+
+func (s *SQLiteStore) UpdateProviderModelAvailability(ctx context.Context, providerID, recordID string, available bool) error {
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE provider_models SET is_available = ? WHERE id = ? AND provider_id = ?`,
+		available, recordID, providerID,
+	)
+	if err != nil {
+		return fmt.Errorf("update provider model availability: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("update provider model availability rows affected: %w", err)
+	}
+	if n == 0 {
+		return fmt.Errorf("update provider model availability: no rows for id %s: %w", recordID, sql.ErrNoRows)
 	}
 	return nil
 }
@@ -195,7 +245,7 @@ func (s *SQLiteStore) GetHealthyProvidersForModel(ctx context.Context, modelID s
 		`SELECT DISTINCT p.id, p.name, p.base_url, p.api_key, p.is_healthy, p.health_checked_at, p.created_at, p.updated_at
 		 FROM providers p
 		 INNER JOIN provider_models m ON m.provider_id = p.id
-		 WHERE m.model_id = ? AND p.is_healthy = 1
+		 WHERE m.model_id = ? AND m.is_available = 1 AND p.is_healthy = 1
 		 ORDER BY p.name ASC`,
 		modelID,
 	)

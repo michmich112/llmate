@@ -28,6 +28,8 @@ type ProviderModel struct {
 	ProviderID string    `json:"provider_id"`
 	ModelID    string    `json:"model_id"`
 	CreatedAt  time.Time `json:"created_at"`
+	// IsAvailable controls whether the model appears in GET /v1/models and is routable.
+	IsAvailable bool `json:"is_available"`
 
 	// Per-million-token pricing in USD. Nil means no price configured.
 	CostPerMillionInput      *float64 `json:"cost_per_million_input,omitempty"`

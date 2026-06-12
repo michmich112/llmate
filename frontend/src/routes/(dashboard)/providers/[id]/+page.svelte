@@ -51,6 +51,7 @@
   let addModelLoading = $state(false);
   let addModelError = $state<string | null>(null);
   let modelDeletingIds = $state<Set<string>>(new Set());
+  let availabilityTogglingIds = $state<Set<string>>(new Set());
 
   // Endpoint toggle loading: track by endpoint id
   let endpointTogglingIds = $state<Set<string>>(new Set());
@@ -282,6 +283,25 @@
     }
   }
 
+  async function handleToggleAvailability(model: ProviderModel, available: boolean) {
+    if (!provider) return;
+    const newSet = new Set(availabilityTogglingIds);
+    newSet.add(model.id);
+    availabilityTogglingIds = newSet;
+    try {
+      const result = await api.updateProviderModel(provider.id, model.id, {
+        is_available: available
+      });
+      models = result.models;
+    } catch (e) {
+      alert(e instanceof Error ? e.message : 'Failed to update availability');
+    } finally {
+      const s = new Set(availabilityTogglingIds);
+      s.delete(model.id);
+      availabilityTogglingIds = s;
+    }
+  }
+
   function statusFromHealthy(isHealthy: boolean): 'healthy' | 'unhealthy' {
     return isHealthy ? 'healthy' : 'unhealthy';
   }
@@ -471,6 +491,7 @@
               <thead>
                 <tr class="border-b bg-muted/50 text-left text-xs font-medium uppercase tracking-wide text-muted-foreground">
                   <th class="px-4 py-3">Model ID</th>
+                  <th class="px-4 py-3">Listed</th>
                   <th class="px-4 py-3 text-right">Input ($/M)</th>
                   <th class="px-4 py-3 text-right">Output ($/M)</th>
                   <th class="px-4 py-3 text-right">Cache Read ($/M)</th>
@@ -483,6 +504,17 @@
                   {@const draft = costDrafts[model.id]}
                   <tr class="border-b last:border-0">
                     <td class="px-4 py-2 font-mono text-xs">{model.model_id}</td>
+                    <td class="px-4 py-2">
+                      <input
+                        type="checkbox"
+                        checked={model.is_available}
+                        disabled={availabilityTogglingIds.has(model.id)}
+                        title="Show in GET /v1/models"
+                        onchange={(e) =>
+                          handleToggleAvailability(model, (e.target as HTMLInputElement).checked)}
+                        class="h-4 w-4 rounded border-gray-300 disabled:opacity-50"
+                      />
+                    </td>
                     {#if draft}
                       <td class="px-2 py-2">
                         <Input
@@ -537,7 +569,7 @@
                         </div>
                       </td>
                     {:else}
-                      <td colspan="5" class="px-4 py-2 text-xs text-muted-foreground">—</td>
+                      <td colspan="6" class="px-4 py-2 text-xs text-muted-foreground">—</td>
                     {/if}
                   </tr>
                 {/each}
@@ -545,7 +577,8 @@
             </table>
           </div>
           <p class="px-4 py-2 text-xs text-muted-foreground border-t">
-            Leave fields blank to omit a cost component. Re-discover adds new models without removing existing ones.
+            Listed models appear in GET /v1/models. Re-discover unlists models no longer offered;
+            you can re-enable them manually. Pricing is kept either way.
           </p>
         {/if}
       </CardContent>
@@ -621,7 +654,7 @@
             <div class="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 dark:border-amber-900 dark:bg-amber-950/40">
               <h3 class="mb-1 font-medium">Retained models ({discoverRetainedModels.length})</h3>
               <p class="mb-2 text-xs text-muted-foreground">
-                Configured models not returned by discovery will be kept with their pricing.
+                These stay configured with pricing but are unlisted from GET /v1/models until you enable Listed.
               </p>
               <ul class="space-y-1">
                 {#each discoverRetainedModels as modelId}

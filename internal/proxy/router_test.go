@@ -70,6 +70,12 @@ func (s *routerTestStore) CreateProviderModel(_ context.Context, _ *models.Provi
 func (s *routerTestStore) DeleteProviderModel(_ context.Context, _, _ string) error {
 	return nil
 }
+func (s *routerTestStore) SetProviderModelsAvailability(_ context.Context, _ string, _ []string) error {
+	return nil
+}
+func (s *routerTestStore) UpdateProviderModelAvailability(_ context.Context, _, _ string, _ bool) error {
+	return nil
+}
 func (s *routerTestStore) ListProviderModels(_ context.Context, _ string) ([]models.ProviderModel, error) {
 	return nil, nil
 }
@@ -189,7 +195,7 @@ func TestRouter_DirectModel(t *testing.T) {
 	provA := makeProvider("prov-a", "Provider A", "https://a.example.com")
 	router := routerFrom(&models.RoutingData{
 		Providers: []models.Provider{provA},
-		Models:    []models.ProviderModel{{ProviderID: "prov-a", ModelID: "gpt-4o"}},
+		Models:    []models.ProviderModel{{ProviderID: "prov-a", ModelID: "gpt-4o", IsAvailable: true}},
 		Endpoints: []models.ProviderEndpoint{chatEP("prov-a")},
 	})
 	result, err := router.Route(context.Background(), "gpt-4o", "/v1/chat/completions")
@@ -286,8 +292,8 @@ func TestRouter_CircuitBreakerFiltering(t *testing.T) {
 	router := routerFrom(&models.RoutingData{
 		Providers: []models.Provider{provA, provB},
 		Models: []models.ProviderModel{
-			{ProviderID: "prov-a", ModelID: "model"},
-			{ProviderID: "prov-b", ModelID: "model"},
+			{ProviderID: "prov-a", ModelID: "model", IsAvailable: true},
+			{ProviderID: "prov-b", ModelID: "model", IsAvailable: true},
 		},
 		Endpoints: []models.ProviderEndpoint{chatEP("prov-a"), chatEP("prov-b")},
 	})
@@ -323,8 +329,8 @@ func TestRouter_Failover_MissingEndpoint(t *testing.T) {
 	router := routerFrom(&models.RoutingData{
 		Providers: []models.Provider{provA, provB},
 		Models: []models.ProviderModel{
-			{ProviderID: "prov-a", ModelID: "model"},
-			{ProviderID: "prov-b", ModelID: "model"},
+			{ProviderID: "prov-a", ModelID: "model", IsAvailable: true},
+			{ProviderID: "prov-b", ModelID: "model", IsAvailable: true},
 		},
 		Endpoints: []models.ProviderEndpoint{chatEP("prov-b")},
 	})
@@ -356,7 +362,7 @@ func TestRouter_AllProvidersFiltered(t *testing.T) {
 	provA := makeProvider("prov-a", "Provider A", "https://a.example.com")
 	router := routerFrom(&models.RoutingData{
 		Providers: []models.Provider{provA},
-		Models:    []models.ProviderModel{{ProviderID: "prov-a", ModelID: "model"}},
+		Models:    []models.ProviderModel{{ProviderID: "prov-a", ModelID: "model", IsAvailable: true}},
 	})
 	_, err := router.Route(context.Background(), "model", "/v1/chat/completions")
 	if !errors.Is(err, ErrNoAvailableProvider) {
@@ -375,8 +381,8 @@ func TestRouter_EndpointFiltering(t *testing.T) {
 	router := routerFrom(&models.RoutingData{
 		Providers: []models.Provider{provA, provB},
 		Models: []models.ProviderModel{
-			{ProviderID: "prov-a", ModelID: "embed-model"},
-			{ProviderID: "prov-b", ModelID: "embed-model"},
+			{ProviderID: "prov-a", ModelID: "embed-model", IsAvailable: true},
+			{ProviderID: "prov-b", ModelID: "embed-model", IsAvailable: true},
 		},
 		Endpoints: []models.ProviderEndpoint{{
 			ProviderID: "prov-b", Path: "/v1/embeddings", Method: "POST", IsSupported: true, IsEnabled: true,
@@ -411,7 +417,7 @@ func TestRouter_TargetURLConstruction(t *testing.T) {
 		prov := makeProvider("prov-x", "X", tc.baseURL)
 		router := routerFrom(&models.RoutingData{
 			Providers: []models.Provider{prov},
-			Models:    []models.ProviderModel{{ProviderID: "prov-x", ModelID: "m"}},
+			Models:    []models.ProviderModel{{ProviderID: "prov-x", ModelID: "m", IsAvailable: true}},
 			Endpoints: []models.ProviderEndpoint{chatEP("prov-x")},
 		})
 		result, err := router.Route(context.Background(), "m", tc.endpointPath)

@@ -62,6 +62,12 @@ func (m *mockStore) UpdateProviderEndpoint(_ context.Context, _ *models.Provider
 func (m *mockStore) SyncProviderModels(_ context.Context, _ string, _ []string) error { return nil }
 func (m *mockStore) CreateProviderModel(_ context.Context, _ *models.ProviderModel) error { return nil }
 func (m *mockStore) DeleteProviderModel(_ context.Context, _, _ string) error             { return nil }
+func (m *mockStore) SetProviderModelsAvailability(_ context.Context, _ string, _ []string) error {
+	return nil
+}
+func (m *mockStore) UpdateProviderModelAvailability(_ context.Context, _, _ string, _ bool) error {
+	return nil
+}
 func (m *mockStore) ListProviderModels(_ context.Context, _ string) ([]models.ProviderModel, error) {
 	return nil, nil
 }

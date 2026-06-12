@@ -63,6 +63,13 @@ type Store interface {
 	// DeleteProviderModel removes a provider model record by ID scoped to the provider.
 	DeleteProviderModel(ctx context.Context, providerID, recordID string) error
 
+	// SetProviderModelsAvailability marks the given model IDs as available for a provider
+	// and marks all other models on that provider as unavailable.
+	SetProviderModelsAvailability(ctx context.Context, providerID string, availableModelIDs []string) error
+
+	// UpdateProviderModelAvailability sets is_available on a single provider model record.
+	UpdateProviderModelAvailability(ctx context.Context, providerID, recordID string, available bool) error
+
 	// ListProviderModels returns all models for a provider.
 	ListProviderModels(ctx context.Context, providerID string) ([]models.ProviderModel, error)
 
