@@ -28,8 +28,10 @@ type mockStore struct {
 	updateProviderEndpoint      func(ctx context.Context, ep *models.ProviderEndpoint) error
 	syncProviderModels          func(ctx context.Context, providerID string, modelIDs []string) error
 	createProviderModel         func(ctx context.Context, m *models.ProviderModel) error
-	deleteProviderModel         func(ctx context.Context, providerID, recordID string) error
-	listProviderModels          func(ctx context.Context, providerID string) ([]models.ProviderModel, error)
+	deleteProviderModel              func(ctx context.Context, providerID, recordID string) error
+	setProviderModelsAvailability    func(ctx context.Context, providerID string, availableModelIDs []string) error
+	updateProviderModelAvailability  func(ctx context.Context, providerID, recordID string, available bool) error
+	listProviderModels               func(ctx context.Context, providerID string) ([]models.ProviderModel, error)
 	listAllModels               func(ctx context.Context) ([]models.ProviderModel, error)
 	createAlias                 func(ctx context.Context, a *models.ModelAlias) error
 	listAliases                 func(ctx context.Context) ([]models.ModelAlias, error)
@@ -111,6 +113,18 @@ func (m *mockStore) CreateProviderModel(ctx context.Context, pm *models.Provider
 func (m *mockStore) DeleteProviderModel(ctx context.Context, providerID, recordID string) error {
 	if m.deleteProviderModel != nil {
 		return m.deleteProviderModel(ctx, providerID, recordID)
+	}
+	return nil
+}
+func (m *mockStore) SetProviderModelsAvailability(ctx context.Context, providerID string, availableModelIDs []string) error {
+	if m.setProviderModelsAvailability != nil {
+		return m.setProviderModelsAvailability(ctx, providerID, availableModelIDs)
+	}
+	return nil
+}
+func (m *mockStore) UpdateProviderModelAvailability(ctx context.Context, providerID, recordID string, available bool) error {
+	if m.updateProviderModelAvailability != nil {
+		return m.updateProviderModelAvailability(ctx, providerID, recordID, available)
 	}
 	return nil
 }

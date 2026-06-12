@@ -319,6 +319,38 @@ func TestSyncProviderModels(t *testing.T) {
 	}
 }
 
+func TestSetProviderModelsAvailability(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	p := newProvider(uuid.NewString(), "Avail", "https://avail.test", false, now)
+	if err := store.CreateProvider(ctx, p); err != nil {
+		t.Fatalf("CreateProvider: %v", err)
+	}
+	if err := store.SyncProviderModels(ctx, p.ID, []string{"keep", "drop"}); err != nil {
+		t.Fatalf("SyncProviderModels: %v", err)
+	}
+	if err := store.SetProviderModelsAvailability(ctx, p.ID, []string{"keep"}); err != nil {
+		t.Fatalf("SetProviderModelsAvailability: %v", err)
+	}
+
+	ms, err := store.ListProviderModels(ctx, p.ID)
+	if err != nil {
+		t.Fatalf("ListProviderModels: %v", err)
+	}
+	byID := map[string]bool{}
+	for _, m := range ms {
+		byID[m.ModelID] = m.IsAvailable
+	}
+	if !byID["keep"] {
+		t.Error("keep should be available")
+	}
+	if byID["drop"] {
+		t.Error("drop should be unavailable")
+	}
+}
+
 func TestAliasesCRUD(t *testing.T) {
 	store := newTestStore(t)
 	ctx := context.Background()
@@ -448,6 +480,9 @@ func TestGetHealthyProvidersForModel(t *testing.T) {
 		}
 		if err := store.SyncProviderModels(ctx, p.ID, []string{"gpt-4"}); err != nil {
 			t.Fatalf("SyncProviderModels: %v", err)
+		}
+		if err := store.SetProviderModelsAvailability(ctx, p.ID, []string{"gpt-4"}); err != nil {
+			t.Fatalf("SetProviderModelsAvailability: %v", err)
 		}
 	}
 

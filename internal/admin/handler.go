@@ -666,6 +666,7 @@ func (h *Handler) HandleUpdateProviderModel(w http.ResponseWriter, r *http.Reque
 	}
 
 	var body struct {
+		IsAvailable              *bool    `json:"is_available"`
 		CostPerMillionInput      *float64 `json:"cost_per_million_input"`
 		CostPerMillionOutput     *float64 `json:"cost_per_million_output"`
 		CostPerMillionCacheRead  *float64 `json:"cost_per_million_cache_read"`
@@ -676,22 +677,41 @@ func (h *Handler) HandleUpdateProviderModel(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
+	if body.IsAvailable != nil {
+		if err := h.store.UpdateProviderModelAvailability(r.Context(), providerID, modelRecordID, *body.IsAvailable); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				respondError(w, http.StatusNotFound, "model not found")
+				return
+			}
+			respondError(w, http.StatusInternalServerError, "failed to update model availability")
+			return
+		}
+	}
+
 	m := &models.ProviderModel{
 		CostPerMillionInput:      body.CostPerMillionInput,
 		CostPerMillionOutput:     body.CostPerMillionOutput,
 		CostPerMillionCacheRead:  body.CostPerMillionCacheRead,
 		CostPerMillionCacheWrite: body.CostPerMillionCacheWrite,
 	}
-	if err := h.store.UpdateProviderModelCosts(r.Context(), modelRecordID, m); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			respondError(w, http.StatusNotFound, "model not found")
+	hasCostUpdate := body.CostPerMillionInput != nil || body.CostPerMillionOutput != nil ||
+		body.CostPerMillionCacheRead != nil || body.CostPerMillionCacheWrite != nil
+	if hasCostUpdate {
+		if err := h.store.UpdateProviderModelCosts(r.Context(), modelRecordID, m); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				respondError(w, http.StatusNotFound, "model not found")
+				return
+			}
+			respondError(w, http.StatusInternalServerError, "failed to update model costs")
 			return
 		}
-		respondError(w, http.StatusInternalServerError, "failed to update model costs")
+	}
+
+	if body.IsAvailable == nil && !hasCostUpdate {
+		respondError(w, http.StatusBadRequest, "no fields to update")
 		return
 	}
 
-	// Return updated provider model list so the frontend can refresh in one round trip.
 	providerModels, err := h.store.ListProviderModels(r.Context(), providerID)
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, "failed to list models")
@@ -744,10 +764,11 @@ func (h *Handler) HandleAddProviderModel(w http.ResponseWriter, r *http.Request)
 
 	now := time.Now().UTC()
 	pm := &models.ProviderModel{
-		ID:         uuid.NewString(),
-		ProviderID: providerID,
-		ModelID:    modelID,
-		CreatedAt:  now,
+		ID:          uuid.NewString(),
+		ProviderID:  providerID,
+		ModelID:     modelID,
+		CreatedAt:   now,
+		IsAvailable: false,
 	}
 	if err := h.store.CreateProviderModel(r.Context(), pm); err != nil {
 		respondError(w, http.StatusInternalServerError, "failed to add model")

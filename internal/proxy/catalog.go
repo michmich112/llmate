@@ -177,11 +177,16 @@ func buildRoutingSnapshot(data *models.RoutingData) *routingSnapshot {
 
 	providerModels := make(map[string]map[string]models.ProviderModel)
 	directModels := make(map[string][]RouteCandidate)
+	seen := make(map[string]struct{})
 	for _, m := range data.Models {
 		if providerModels[m.ProviderID] == nil {
 			providerModels[m.ProviderID] = make(map[string]models.ProviderModel)
 		}
 		providerModels[m.ProviderID][m.ModelID] = m
+		if !m.IsAvailable {
+			continue
+		}
+		seen[m.ModelID] = struct{}{}
 		p, ok := providers[m.ProviderID]
 		if !ok || !p.IsHealthy {
 			continue
@@ -200,8 +205,13 @@ func buildRoutingSnapshot(data *models.RoutingData) *routingSnapshot {
 			continue
 		}
 		p, ok := providers[a.ProviderID]
-		if !ok {
+		if !ok || !p.IsHealthy {
 			continue
+		}
+		if byModel, ok := providerModels[a.ProviderID]; ok {
+			if pm, ok := byModel[a.ModelID]; ok && !pm.IsAvailable {
+				continue
+			}
 		}
 		aliases[a.Alias] = append(aliases[a.Alias], RouteCandidate{
 			Provider: p,
@@ -209,17 +219,9 @@ func buildRoutingSnapshot(data *models.RoutingData) *routingSnapshot {
 			Weight:   a.Weight,
 			Priority: a.Priority,
 		})
+		seen[a.Alias] = struct{}{}
 	}
 
-	seen := make(map[string]struct{})
-	for modelID := range directModels {
-		seen[modelID] = struct{}{}
-	}
-	for _, a := range data.Aliases {
-		if a.IsEnabled {
-			seen[a.Alias] = struct{}{}
-		}
-	}
 	publicModelIDs := make([]string, 0, len(seen))
 	for id := range seen {
 		publicModelIDs = append(publicModelIDs, id)

@@ -26,6 +26,7 @@ export interface ProviderModel {
   provider_id: string;
   model_id: string;
   created_at: string;
+  is_available: boolean;
   cost_per_million_input?: number;
   cost_per_million_output?: number;
   cost_per_million_cache_read?: number;

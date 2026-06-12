@@ -325,6 +325,9 @@ func TestHandleConfirm_Persists(t *testing.T) {
 			capturedModelIDs = modelIDs
 			return nil
 		},
+		setProviderModelsAvailability: func(_ context.Context, _ string, availableModelIDs []string) error {
+			return nil
+		},
 		listProviderEndpoints: func(_ context.Context, providerID string) ([]models.ProviderEndpoint, error) {
 			return returnEndpoints, nil
 		},
@@ -413,6 +416,7 @@ func TestHandleConfirm_PreservesExistingModels(t *testing.T) {
 	prov := &models.Provider{ID: "prov-1", Name: "Test", BaseURL: "http://localhost", CreatedAt: now, UpdatedAt: now}
 
 	var capturedModelIDs []string
+	var capturedAvailableIDs []string
 
 	store := &mockStore{
 		getProvider: func(_ context.Context, id string) (*models.Provider, error) {
@@ -423,6 +427,10 @@ func TestHandleConfirm_PreservesExistingModels(t *testing.T) {
 		},
 		syncProviderModels: func(_ context.Context, _ string, modelIDs []string) error {
 			capturedModelIDs = modelIDs
+			return nil
+		},
+		setProviderModelsAvailability: func(_ context.Context, _ string, availableModelIDs []string) error {
+			capturedAvailableIDs = availableModelIDs
 			return nil
 		},
 		listProviderModels: func(_ context.Context, _ string) ([]models.ProviderModel, error) {
@@ -456,6 +464,9 @@ func TestHandleConfirm_PreservesExistingModels(t *testing.T) {
 	}
 	if !seen["new-model"] || !seen["retired-model"] {
 		t.Errorf("synced model IDs = %v, want new-model and retired-model preserved", capturedModelIDs)
+	}
+	if len(capturedAvailableIDs) != 1 || capturedAvailableIDs[0] != "new-model" {
+		t.Errorf("available model IDs = %v, want [new-model]", capturedAvailableIDs)
 	}
 }
 

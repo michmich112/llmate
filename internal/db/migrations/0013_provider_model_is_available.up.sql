@@ -1,0 +1,1 @@
+ALTER TABLE provider_models ADD COLUMN is_available BOOLEAN NOT NULL DEFAULT 1;

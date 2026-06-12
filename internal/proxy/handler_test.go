@@ -110,6 +110,12 @@ func (s *mockStore) UpdateProviderEndpoint(_ context.Context, _ *models.Provider
 func (s *mockStore) SyncProviderModels(_ context.Context, _ string, _ []string) error { return nil }
 func (s *mockStore) CreateProviderModel(_ context.Context, _ *models.ProviderModel) error { return nil }
 func (s *mockStore) DeleteProviderModel(_ context.Context, _, _ string) error             { return nil }
+func (s *mockStore) SetProviderModelsAvailability(_ context.Context, _ string, _ []string) error {
+	return nil
+}
+func (s *mockStore) UpdateProviderModelAvailability(_ context.Context, _, _ string, _ bool) error {
+	return nil
+}
 func (s *mockStore) ListProviderModels(_ context.Context, _ string) ([]models.ProviderModel, error) {
 	return nil, nil
 }
@@ -612,8 +618,8 @@ func TestHandleListModels(t *testing.T) {
 	cat := NewRoutingCatalogFromData(&models.RoutingData{
 		Providers: []models.Provider{{ID: "p1", Name: "p1", IsHealthy: true}},
 		Models: []models.ProviderModel{
-			{ID: "pm1", ProviderID: "p1", ModelID: "gpt-4o"},
-			{ID: "pm2", ProviderID: "p1", ModelID: "gpt-3.5-turbo"},
+			{ID: "pm1", ProviderID: "p1", ModelID: "gpt-4o", IsAvailable: true},
+			{ID: "pm2", ProviderID: "p1", ModelID: "gpt-3.5-turbo", IsAvailable: true},
 		},
 		Aliases: []models.ModelAlias{
 			{ID: "a1", Alias: "smart", ModelID: "gpt-4o", ProviderID: "p1", IsEnabled: true},
@@ -655,6 +661,62 @@ func TestHandleListModels(t *testing.T) {
 	}
 	if len(resp.Data) != 3 {
 		t.Errorf("expected 3 entries, got %d: %v", len(resp.Data), resp.Data)
+	}
+}
+
+func TestHandleListModels_ExcludesUnavailable(t *testing.T) {
+	cat := NewRoutingCatalogFromData(&models.RoutingData{
+		Providers: []models.Provider{{ID: "p1", Name: "p1", IsHealthy: true}},
+		Models: []models.ProviderModel{
+			{ID: "pm1", ProviderID: "p1", ModelID: "listed-model", IsAvailable: true},
+			{ID: "pm2", ProviderID: "p1", ModelID: "hidden-model", IsAvailable: false},
+		},
+	})
+	h := NewHandler(&mockRouter{}, &mockMetrics{}, cat, NewConfigSnapshot(&mockStore{}), nil)
+
+	req := httptest.NewRequest("GET", "/v1/models", nil)
+	rr := httptest.NewRecorder()
+	h.HandleListModels(rr, req)
+
+	var resp struct {
+		Data []modelObject `json:"data"`
+	}
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode error: %v", err)
+	}
+	ids := make(map[string]bool)
+	for _, d := range resp.Data {
+		ids[d.ID] = true
+	}
+	if !ids["listed-model"] {
+		t.Error("expected listed-model in /v1/models response")
+	}
+	if ids["hidden-model"] {
+		t.Error("unavailable model should not appear in /v1/models response")
+	}
+}
+
+func TestHandleListModels_IncludesManuallyAvailableWithoutHealthyProvider(t *testing.T) {
+	cat := NewRoutingCatalogFromData(&models.RoutingData{
+		Providers: []models.Provider{{ID: "p1", Name: "p1", IsHealthy: false}},
+		Models: []models.ProviderModel{
+			{ID: "pm1", ProviderID: "p1", ModelID: "manual-model", IsAvailable: true},
+		},
+	})
+	h := NewHandler(&mockRouter{}, &mockMetrics{}, cat, NewConfigSnapshot(&mockStore{}), nil)
+
+	req := httptest.NewRequest("GET", "/v1/models", nil)
+	rr := httptest.NewRecorder()
+	h.HandleListModels(rr, req)
+
+	var resp struct {
+		Data []modelObject `json:"data"`
+	}
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode error: %v", err)
+	}
+	if len(resp.Data) != 1 || resp.Data[0].ID != "manual-model" {
+		t.Fatalf("expected manual-model listed, got %+v", resp.Data)
 	}
 }
 
@@ -774,7 +836,7 @@ func TestHandleAudioSpeech_BinaryPassthrough(t *testing.T) {
 func TestHandleGetModel(t *testing.T) {
 	cat := NewRoutingCatalogFromData(&models.RoutingData{
 		Providers: []models.Provider{{ID: "p1", Name: "p1", IsHealthy: true}},
-		Models: []models.ProviderModel{{ProviderID: "p1", ModelID: "gpt-4o"}},
+		Models: []models.ProviderModel{{ProviderID: "p1", ModelID: "gpt-4o", IsAvailable: true}},
 	})
 	h := NewHandler(&mockRouter{}, &mockMetrics{}, cat, NewConfigSnapshot(&mockStore{}), nil)
 

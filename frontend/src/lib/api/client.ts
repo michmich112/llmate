@@ -203,18 +203,21 @@ class ApiClient {
   async updateProviderModel(
     providerId: string,
     modelRecordId: string,
-    costs: Pick<
-      ProviderModel,
-      | 'cost_per_million_input'
-      | 'cost_per_million_output'
-      | 'cost_per_million_cache_read'
-      | 'cost_per_million_cache_write'
+    data: Partial<
+      Pick<
+        ProviderModel,
+        | 'is_available'
+        | 'cost_per_million_input'
+        | 'cost_per_million_output'
+        | 'cost_per_million_cache_read'
+        | 'cost_per_million_cache_write'
+      >
     >
   ): Promise<{ models: ProviderModel[] }> {
     return this.request<{ models: ProviderModel[] }>(
       'PUT',
       `/providers/${providerId}/models/${modelRecordId}`,
-      costs
+      data
     );
   }
 
