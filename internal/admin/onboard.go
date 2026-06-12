@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 
@@ -181,7 +182,13 @@ func (h *OnboardHandler) HandleConfirm(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := h.store.SyncProviderModels(r.Context(), provider.ID, body.Models); err != nil {
+	existingModels, err := h.store.ListProviderModels(r.Context(), provider.ID)
+	if err != nil {
+		respondError(w, http.StatusInternalServerError, "failed to list existing models")
+		return
+	}
+	modelIDs := mergeProviderModelIDs(body.Models, existingModels)
+	if err := h.store.SyncProviderModels(r.Context(), provider.ID, modelIDs); err != nil {
 		respondError(w, http.StatusInternalServerError, "failed to sync models")
 		return
 	}
@@ -212,6 +219,26 @@ func (h *OnboardHandler) HandleConfirm(w http.ResponseWriter, r *http.Request) {
 		"endpoints": endpoints,
 		"models":    providerModels,
 	})
+}
+
+func mergeProviderModelIDs(requested []string, existing []models.ProviderModel) []string {
+	seen := make(map[string]struct{}, len(existing)+len(requested))
+	for _, m := range existing {
+		if m.ModelID != "" {
+			seen[m.ModelID] = struct{}{}
+		}
+	}
+	for _, id := range requested {
+		if id != "" {
+			seen[id] = struct{}{}
+		}
+	}
+	merged := make([]string, 0, len(seen))
+	for id := range seen {
+		merged = append(merged, id)
+	}
+	sort.Strings(merged)
+	return merged
 }
 
 // discoverModels fetches model IDs from GET {baseURL}/v1/models.

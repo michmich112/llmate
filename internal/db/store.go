@@ -41,7 +41,8 @@ type Store interface {
 
 	// --- Provider Endpoints ---
 
-	// UpsertProviderEndpoints replaces all endpoints for a provider with the given set.
+	// UpsertProviderEndpoints inserts or updates endpoints for a provider.
+	// Endpoints not in the given set are left unchanged.
 	UpsertProviderEndpoints(ctx context.Context, providerID string, eps []models.ProviderEndpoint) error
 
 	// ListProviderEndpoints returns all endpoints for a provider.
@@ -52,9 +53,15 @@ type Store interface {
 
 	// --- Provider Models ---
 
-	// SyncProviderModels replaces all models for a provider with the given model IDs.
-	// Generates new UUIDs for new models, removes models not in the list.
+	// SyncProviderModels inserts any model IDs not yet registered for the provider.
+	// Existing records (and their cost configuration) are never modified or removed.
 	SyncProviderModels(ctx context.Context, providerID string, modelIDs []string) error
+
+	// CreateProviderModel inserts a single provider model. The caller must set ID and timestamps.
+	CreateProviderModel(ctx context.Context, m *models.ProviderModel) error
+
+	// DeleteProviderModel removes a provider model record by ID scoped to the provider.
+	DeleteProviderModel(ctx context.Context, providerID, recordID string) error
 
 	// ListProviderModels returns all models for a provider.
 	ListProviderModels(ctx context.Context, providerID string) ([]models.ProviderModel, error)

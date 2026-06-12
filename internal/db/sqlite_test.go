@@ -199,25 +199,22 @@ func TestUpsertProviderEndpoints(t *testing.T) {
 		t.Fatalf("expected 2 endpoints, got %d", len(got1))
 	}
 
-	// Upsert with 1 endpoint — replaces the previous set
+	// Upsert with 1 endpoint — updates the matching row and keeps other endpoints
 	eps2 := []models.ProviderEndpoint{
-		{ID: uuid.NewString(), ProviderID: p.ID, Path: "/v1/chat/completions", Method: "POST", IsSupported: true, IsEnabled: true, CreatedAt: now},
+		{ID: uuid.NewString(), ProviderID: p.ID, Path: "/v1/chat/completions", Method: "POST", IsSupported: false, IsEnabled: false, CreatedAt: now},
 	}
 	if err := store.UpsertProviderEndpoints(ctx, p.ID, eps2); err != nil {
-		t.Fatalf("UpsertProviderEndpoints replace: %v", err)
+		t.Fatalf("UpsertProviderEndpoints merge: %v", err)
 	}
 	got2, err := store.ListProviderEndpoints(ctx, p.ID)
 	if err != nil {
-		t.Fatalf("ListProviderEndpoints after replace: %v", err)
+		t.Fatalf("ListProviderEndpoints after merge: %v", err)
 	}
-	if len(got2) != 1 {
-		t.Fatalf("expected 1 endpoint after upsert, got %d", len(got2))
-	}
-	if got2[0].Path != "/v1/chat/completions" {
-		t.Errorf("wrong endpoint path: %s", got2[0].Path)
+	if len(got2) != 2 {
+		t.Fatalf("expected 2 endpoints after merge upsert, got %d", len(got2))
 	}
 
-	// Empty upsert clears all endpoints
+	// Empty upsert is a no-op — existing endpoints remain
 	if err := store.UpsertProviderEndpoints(ctx, p.ID, nil); err != nil {
 		t.Fatalf("UpsertProviderEndpoints empty: %v", err)
 	}
@@ -225,8 +222,8 @@ func TestUpsertProviderEndpoints(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListProviderEndpoints after empty upsert: %v", err)
 	}
-	if len(got3) != 0 {
-		t.Fatalf("expected 0 endpoints after empty upsert, got %d", len(got3))
+	if len(got3) != 2 {
+		t.Fatalf("expected 2 endpoints after empty upsert, got %d", len(got3))
 	}
 }
 
@@ -288,7 +285,7 @@ func TestSyncProviderModels(t *testing.T) {
 		ids1[m.ModelID] = m.ID
 	}
 
-	// Sync [b, c] — a is removed, b keeps its existing record (preserving cost data), c is added
+	// Sync [b, c] — model-a is retained (insert-only sync never removes models)
 	if err := store.SyncProviderModels(ctx, p.ID, []string{"model-b", "model-c"}); err != nil {
 		t.Fatalf("SyncProviderModels [b,c]: %v", err)
 	}
@@ -296,34 +293,29 @@ func TestSyncProviderModels(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListProviderModels after sync: %v", err)
 	}
-	if len(ms2) != 2 {
-		t.Fatalf("expected 2 models after sync, got %d", len(ms2))
+	if len(ms2) != 3 {
+		t.Fatalf("expected 3 models after sync, got %d", len(ms2))
 	}
 
 	modelSet := map[string]bool{}
 	for _, m := range ms2 {
 		modelSet[m.ModelID] = true
-		// Existing model-b should retain its UUID so cost data is preserved.
 		if m.ModelID == "model-b" {
 			if m.ID != ids1["model-b"] {
 				t.Errorf("model-b should retain its UUID across sync, got %s want %s", m.ID, ids1["model-b"])
 			}
 		}
 	}
-	if !modelSet["model-b"] || !modelSet["model-c"] {
-		t.Errorf("expected [model-b, model-c], got %v", modelSet)
-	}
-	if modelSet["model-a"] {
-		t.Error("model-a should have been removed by sync")
+	if !modelSet["model-a"] || !modelSet["model-b"] || !modelSet["model-c"] {
+		t.Errorf("expected [model-a, model-b, model-c], got %v", modelSet)
 	}
 
-	// ListAllModels should include models from all providers
 	all, err := store.ListAllModels(ctx)
 	if err != nil {
 		t.Fatalf("ListAllModels: %v", err)
 	}
-	if len(all) != 2 {
-		t.Errorf("expected 2 total models, got %d", len(all))
+	if len(all) != 3 {
+		t.Errorf("expected 3 total models, got %d", len(all))
 	}
 }
 
