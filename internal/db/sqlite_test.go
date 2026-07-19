@@ -24,12 +24,16 @@ func newTestStore(t *testing.T) *SQLiteStore {
 
 func newProvider(id, name, baseURL string, healthy bool, now time.Time) *models.Provider {
 	return &models.Provider{
-		ID:        id,
-		Name:      name,
-		BaseURL:   baseURL,
-		IsHealthy: healthy,
-		CreatedAt: now,
-		UpdatedAt: now,
+		ID:                            id,
+		Name:                          name,
+		BaseURL:                       baseURL,
+		IsHealthy:                     healthy,
+		CircuitBreakerEnabled:         true,
+		CircuitBreakerErrorThreshold:  models.DefaultCircuitBreakerErrorThreshold,
+		CircuitBreakerWindowSeconds:   models.DefaultCircuitBreakerWindowSeconds,
+		CircuitBreakerCooldownSeconds: models.DefaultCircuitBreakerCooldownSeconds,
+		CreatedAt:                     now,
+		UpdatedAt:                     now,
 	}
 }
 
@@ -39,13 +43,17 @@ func TestProviderCRUD(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Second)
 
 	p := &models.Provider{
-		ID:        uuid.NewString(),
-		Name:      "OpenAI",
-		BaseURL:   "https://api.openai.com",
-		APIKey:    "sk-test",
-		IsHealthy: false,
-		CreatedAt: now,
-		UpdatedAt: now,
+		ID:                            uuid.NewString(),
+		Name:                          "OpenAI",
+		BaseURL:                       "https://api.openai.com",
+		APIKey:                        "sk-test",
+		IsHealthy:                     false,
+		CircuitBreakerEnabled:         true,
+		CircuitBreakerErrorThreshold:  models.DefaultCircuitBreakerErrorThreshold,
+		CircuitBreakerWindowSeconds:   models.DefaultCircuitBreakerWindowSeconds,
+		CircuitBreakerCooldownSeconds: models.DefaultCircuitBreakerCooldownSeconds,
+		CreatedAt:                     now,
+		UpdatedAt:                     now,
 	}
 
 	// Create
@@ -776,6 +784,54 @@ func TestUpdateProviderMissing(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("expected error updating nonexistent provider, got nil")
+	}
+}
+
+func TestProviderCircuitBreakerSettings(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Second)
+
+	p := newProvider(uuid.NewString(), "CB", "https://cb.test", true, now)
+	if err := store.CreateProvider(ctx, p); err != nil {
+		t.Fatalf("CreateProvider: %v", err)
+	}
+
+	got, err := store.GetProvider(ctx, p.ID)
+	if err != nil {
+		t.Fatalf("GetProvider: %v", err)
+	}
+	if !got.CircuitBreakerEnabled {
+		t.Fatal("expected circuit breaker enabled by default")
+	}
+	if got.CircuitBreakerErrorThreshold != models.DefaultCircuitBreakerErrorThreshold {
+		t.Fatalf("threshold: got %v", got.CircuitBreakerErrorThreshold)
+	}
+
+	got.CircuitBreakerEnabled = false
+	got.CircuitBreakerErrorThreshold = 0.75
+	got.CircuitBreakerWindowSeconds = 120
+	got.CircuitBreakerCooldownSeconds = 45
+	got.UpdatedAt = now.Add(time.Second)
+	if err := store.UpdateProvider(ctx, got); err != nil {
+		t.Fatalf("UpdateProvider: %v", err)
+	}
+
+	got2, err := store.GetProvider(ctx, p.ID)
+	if err != nil {
+		t.Fatalf("GetProvider after update: %v", err)
+	}
+	if got2.CircuitBreakerEnabled {
+		t.Fatal("expected circuit breaker disabled")
+	}
+	if got2.CircuitBreakerErrorThreshold != 0.75 {
+		t.Fatalf("threshold: got %v, want 0.75", got2.CircuitBreakerErrorThreshold)
+	}
+	if got2.CircuitBreakerWindowSeconds != 120 {
+		t.Fatalf("window: got %d, want 120", got2.CircuitBreakerWindowSeconds)
+	}
+	if got2.CircuitBreakerCooldownSeconds != 45 {
+		t.Fatalf("cooldown: got %d, want 45", got2.CircuitBreakerCooldownSeconds)
 	}
 }
 

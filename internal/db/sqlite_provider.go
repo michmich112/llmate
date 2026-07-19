@@ -10,14 +10,19 @@ import (
 	"github.com/llmate/gateway/internal/models"
 )
 
-const providerCols = `id, name, base_url, api_key, is_healthy, health_checked_at, created_at, updated_at`
+const providerCols = `id, name, base_url, api_key, is_healthy, health_checked_at, created_at, updated_at,
+	circuit_breaker_enabled, circuit_breaker_error_threshold, circuit_breaker_window_seconds, circuit_breaker_cooldown_seconds`
 
 func (s *SQLiteStore) CreateProvider(ctx context.Context, p *models.Provider) error {
+	models.NormalizeCircuitBreaker(p)
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO providers (id, name, base_url, api_key, is_healthy, health_checked_at, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO providers (
+			id, name, base_url, api_key, is_healthy, health_checked_at, created_at, updated_at,
+			circuit_breaker_enabled, circuit_breaker_error_threshold, circuit_breaker_window_seconds, circuit_breaker_cooldown_seconds
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		p.ID, p.Name, p.BaseURL, nullStr(p.APIKey),
 		p.IsHealthy, nullTime(p.HealthCheckedAt), p.CreatedAt, p.UpdatedAt,
+		p.CircuitBreakerEnabled, p.CircuitBreakerErrorThreshold, p.CircuitBreakerWindowSeconds, p.CircuitBreakerCooldownSeconds,
 	)
 	if err != nil {
 		return fmt.Errorf("create provider: %w", err)
@@ -63,9 +68,17 @@ func (s *SQLiteStore) ListProviders(ctx context.Context) ([]models.Provider, err
 }
 
 func (s *SQLiteStore) UpdateProvider(ctx context.Context, p *models.Provider) error {
+	models.NormalizeCircuitBreaker(p)
 	res, err := s.db.ExecContext(ctx,
-		`UPDATE providers SET name = ?, base_url = ?, api_key = ?, updated_at = ? WHERE id = ?`,
-		p.Name, p.BaseURL, nullStr(p.APIKey), p.UpdatedAt, p.ID,
+		`UPDATE providers SET
+			name = ?, base_url = ?, api_key = ?, updated_at = ?,
+			circuit_breaker_enabled = ?, circuit_breaker_error_threshold = ?,
+			circuit_breaker_window_seconds = ?, circuit_breaker_cooldown_seconds = ?
+		 WHERE id = ?`,
+		p.Name, p.BaseURL, nullStr(p.APIKey), p.UpdatedAt,
+		p.CircuitBreakerEnabled, p.CircuitBreakerErrorThreshold,
+		p.CircuitBreakerWindowSeconds, p.CircuitBreakerCooldownSeconds,
+		p.ID,
 	)
 	if err != nil {
 		return fmt.Errorf("update provider: %w", err)

@@ -7,6 +7,14 @@ export interface Provider {
   health_checked_at?: string;
   created_at: string;
   updated_at: string;
+  /** When false, the gateway never trips this provider's circuit breaker. */
+  circuit_breaker_enabled: boolean;
+  /** Error-rate threshold (0–1) that opens the breaker. Default 0.5. */
+  circuit_breaker_error_threshold: number;
+  /** Sliding window in seconds for error-rate calculation. Default 60. */
+  circuit_breaker_window_seconds: number;
+  /** Seconds to stay open before probing again. Default 30. */
+  circuit_breaker_cooldown_seconds: number;
   /** Model IDs registered for this provider. Present in list responses. */
   models?: string[];
 }

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
@@ -263,6 +264,68 @@ func TestHandleChatCompletions_NonStreaming(t *testing.T) {
 	}
 }
 
+func TestHandleShow(t *testing.T) {
+	const respBody = `{"parameters":"num_ctx 4096","details":{"family":"llama","parameter_size":"8.0B"}}`
+
+	var gotBody string
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/show" {
+			t.Errorf("backend path = %q, want /api/show", r.URL.Path)
+		}
+		b, _ := io.ReadAll(r.Body)
+		gotBody = string(b)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(200)
+		fmt.Fprint(w, respBody)
+	}))
+	defer backend.Close()
+
+	router := &mockRouter{
+		routeFn: func(_ context.Context, model string, ep string) (*RouteResult, error) {
+			if model != "my-alias" {
+				t.Errorf("route model = %q, want my-alias", model)
+			}
+			if ep != "/api/show" {
+				t.Errorf("route endpoint = %q, want /api/show", ep)
+			}
+			result := fixedRoute(backend.URL, ep)
+			result.ModelID = "llama3:latest"
+			result.RequestedViaAlias = true
+			return result, nil
+		},
+	}
+	metrics := &mockMetrics{}
+	h := newTestHandler(router, metrics)
+
+	body := `{"model":"my-alias","verbose":true}`
+	req := httptest.NewRequest("POST", "/api/show", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	h.HandleShow(rr, req)
+
+	if rr.Code != 200 {
+		t.Fatalf("expected 200, got %d; body: %s", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), `"family":"llama"`) {
+		t.Errorf("response body missing expected content: %s", rr.Body.String())
+	}
+	if !strings.Contains(gotBody, `"model":"llama3:latest"`) {
+		t.Errorf("backend body = %q, want resolved model llama3:latest", gotBody)
+	}
+
+	log := metrics.last()
+	if log == nil {
+		t.Fatal("expected metrics.Record to be called")
+	}
+	if log.RequestedModel != "my-alias" {
+		t.Errorf("RequestedModel = %q, want my-alias", log.RequestedModel)
+	}
+	if log.Path != "/api/show" {
+		t.Errorf("Path = %q, want /api/show", log.Path)
+	}
+}
+
 func TestHandleChatCompletions_NonStreaming_AliasRewritesResponseModel(t *testing.T) {
 	const backendModel = "llama-3"
 	respBody := `{"id":"chatcmpl-1","model":"` + backendModel + `","choices":[{"message":{"role":"assistant","content":"Hi"}}]}`
@@ -434,8 +497,41 @@ func TestHandleChatCompletions_Streaming_AliasRewritesResponseModel(t *testing.T
 }
 
 // ---------------------------------------------------------------------------
-// Test 3: extractModelFromJSON
+// Test 3: extractModelFromJSON / extractModelFromShowRequest
 // ---------------------------------------------------------------------------
+
+func TestExtractModelFromShowRequest(t *testing.T) {
+	tests := []struct {
+		name    string
+		body    string
+		want    string
+		wantErr bool
+	}{
+		{name: "model field", body: `{"model":"llama3"}`, want: "llama3"},
+		{name: "deprecated name field", body: `{"name":"llama3"}`, want: "llama3"},
+		{name: "model takes precedence over name", body: `{"model":"a","name":"b"}`, want: "a"},
+		{name: "missing model and name", body: `{"verbose":true}`, wantErr: true},
+		{name: "empty model and name", body: `{"model":"","name":""}`, wantErr: true},
+		{name: "invalid JSON", body: `not json`, wantErr: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := extractModelFromShowRequest([]byte(tc.body))
+			if tc.wantErr {
+				if err == nil {
+					t.Errorf("expected error, got model=%q", got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got != tc.want {
+				t.Errorf("got %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
 
 func TestExtractModelFromJSON(t *testing.T) {
 	tests := []struct {

@@ -28,6 +28,7 @@ type routingSnapshot struct {
 	endpoints       map[string]map[string]struct{}
 	publicModelIDs  []string
 	providerModels  map[string]map[string]models.ProviderModel
+	providers       map[string]models.Provider
 }
 
 // RoutingCatalog holds an in-memory routing snapshot refreshed on routing-relevant events.
@@ -60,6 +61,7 @@ func NewRoutingCatalog(store db.Store) *RoutingCatalog {
 		directModels:   make(map[string][]RouteCandidate),
 		endpoints:      make(map[string]map[string]struct{}),
 		providerModels: make(map[string]map[string]models.ProviderModel),
+		providers:      make(map[string]models.Provider),
 	})
 	return c
 }
@@ -158,6 +160,16 @@ func (c *RoutingCatalog) ProviderModel(providerID, modelID string) *models.Provi
 	return nil
 }
 
+// ProviderByID returns a copy of the provider from the routing snapshot, or nil.
+func (c *RoutingCatalog) ProviderByID(providerID string) *models.Provider {
+	s := c.snapshot()
+	if p, ok := s.providers[providerID]; ok {
+		copy := p
+		return &copy
+	}
+	return nil
+}
+
 func buildRoutingSnapshot(data *models.RoutingData) *routingSnapshot {
 	providers := make(map[string]models.Provider, len(data.Providers))
 	for _, p := range data.Providers {
@@ -234,5 +246,6 @@ func buildRoutingSnapshot(data *models.RoutingData) *routingSnapshot {
 		endpoints:      endpoints,
 		publicModelIDs: publicModelIDs,
 		providerModels: providerModels,
+		providers:      providers,
 	}
 }

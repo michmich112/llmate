@@ -242,7 +242,8 @@ func (s *SQLiteStore) GetProviderModelCosts(ctx context.Context, providerID, mod
 
 func (s *SQLiteStore) GetHealthyProvidersForModel(ctx context.Context, modelID string) ([]models.Provider, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT DISTINCT p.id, p.name, p.base_url, p.api_key, p.is_healthy, p.health_checked_at, p.created_at, p.updated_at
+		`SELECT DISTINCT p.id, p.name, p.base_url, p.api_key, p.is_healthy, p.health_checked_at, p.created_at, p.updated_at,
+		        p.circuit_breaker_enabled, p.circuit_breaker_error_threshold, p.circuit_breaker_window_seconds, p.circuit_breaker_cooldown_seconds
 		 FROM providers p
 		 INNER JOIN provider_models m ON m.provider_id = p.id
 		 WHERE m.model_id = ? AND m.is_available = 1 AND p.is_healthy = 1

@@ -94,6 +94,9 @@ func (h *OnboardHandler) HandleDiscover(w http.ResponseWriter, r *http.Request) 
 		"model": firstModel,
 		"input": "test",
 	})
+	showBody, _ := json.Marshal(map[string]interface{}{
+		"model": firstModel,
+	})
 
 	type probeSpec struct {
 		path  string
@@ -105,6 +108,7 @@ func (h *OnboardHandler) HandleDiscover(w http.ResponseWriter, r *http.Request) 
 		{path: "/v1/chat/completions", body: chatBody},
 		{path: "/v1/completions", body: completionsBody},
 		{path: "/v1/embeddings", body: embeddingsBody},
+		{path: "/api/show", body: showBody},
 		{path: "/v1/images/generations", skip: true},
 		{path: "/v1/audio/speech", skip: true},
 		{path: "/v1/audio/transcriptions", skip: true},

@@ -155,7 +155,13 @@ func routerFrom(data *models.RoutingData) *SmartRouter {
 }
 
 func makeProvider(id, name, baseURL string) models.Provider {
-	return models.Provider{ID: id, Name: name, BaseURL: baseURL, IsHealthy: true}
+	return models.Provider{
+		ID: id, Name: name, BaseURL: baseURL, IsHealthy: true,
+		CircuitBreakerEnabled:         true,
+		CircuitBreakerErrorThreshold:  models.DefaultCircuitBreakerErrorThreshold,
+		CircuitBreakerWindowSeconds:   models.DefaultCircuitBreakerWindowSeconds,
+		CircuitBreakerCooldownSeconds: models.DefaultCircuitBreakerCooldownSeconds,
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -315,6 +321,32 @@ func TestRouter_CircuitBreakerFiltering(t *testing.T) {
 		if result.Provider.ID != "prov-b" {
 			t.Fatalf("iteration %d: expected prov-b (prov-a open), got %s", i, result.Provider.ID)
 		}
+	}
+}
+
+func TestRouter_CircuitBreakerDisabled(t *testing.T) {
+	provA := makeProvider("prov-a", "Provider A", "https://a.example.com")
+	provA.CircuitBreakerEnabled = false
+
+	router := routerFrom(&models.RoutingData{
+		Providers: []models.Provider{provA},
+		Models:    []models.ProviderModel{{ProviderID: "prov-a", ModelID: "model", IsAvailable: true}},
+		Endpoints: []models.ProviderEndpoint{chatEP("prov-a")},
+	})
+
+	for i := 0; i < 20; i++ {
+		router.ReportFailure("prov-a")
+	}
+	if router.getBreaker("prov-a").State() != StateClosed {
+		t.Fatal("expected breaker to stay Closed when disabled (failures ignored)")
+	}
+
+	result, err := router.Route(context.Background(), "model", "/v1/chat/completions")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Provider.ID != "prov-a" {
+		t.Fatalf("expected prov-a, got %s", result.Provider.ID)
 	}
 }
 

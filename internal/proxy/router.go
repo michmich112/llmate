@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/llmate/gateway/internal/models"
 )
@@ -41,6 +42,33 @@ func (r *SmartRouter) getBreaker(providerID string) *CircuitBreaker {
 	cb = NewCircuitBreaker()
 	r.breakers[providerID] = cb
 	return cb
+}
+
+func (r *SmartRouter) syncBreakerConfig(providerID string, p *models.Provider) *CircuitBreaker {
+	cb := r.getBreaker(providerID)
+	if p == nil {
+		p = r.catalog.ProviderByID(providerID)
+	}
+	if p == nil {
+		return cb
+	}
+	cb.Configure(
+		p.CircuitBreakerErrorThreshold,
+		time.Duration(p.CircuitBreakerWindowSeconds)*time.Second,
+		time.Duration(p.CircuitBreakerCooldownSeconds)*time.Second,
+	)
+	return cb
+}
+
+func (r *SmartRouter) circuitBreakerEnabled(providerID string, p *models.Provider) bool {
+	if p != nil {
+		return p.CircuitBreakerEnabled
+	}
+	if cached := r.catalog.ProviderByID(providerID); cached != nil {
+		return cached.CircuitBreakerEnabled
+	}
+	// Unknown provider: keep legacy behavior (breaker active).
+	return true
 }
 
 type candidate struct {
@@ -93,7 +121,13 @@ func (r *SmartRouter) resolveCandidates(modelID string) ([]candidate, bool, erro
 func (r *SmartRouter) filterByCircuitBreaker(candidates []candidate) []candidate {
 	out := candidates[:0]
 	for _, c := range candidates {
-		if r.getBreaker(c.provider.ID).Allow() {
+		p := c.provider
+		if !r.circuitBreakerEnabled(p.ID, &p) {
+			out = append(out, c)
+			continue
+		}
+		cb := r.syncBreakerConfig(p.ID, &p)
+		if cb.Allow() {
 			out = append(out, c)
 		}
 	}
@@ -143,5 +177,16 @@ func selectWeightedPriority(candidates []candidate) (candidate, error) {
 	return pool[len(pool)-1], nil
 }
 
-func (r *SmartRouter) ReportSuccess(providerID string) { r.getBreaker(providerID).RecordSuccess() }
-func (r *SmartRouter) ReportFailure(providerID string) { r.getBreaker(providerID).RecordFailure() }
+func (r *SmartRouter) ReportSuccess(providerID string) {
+	if !r.circuitBreakerEnabled(providerID, nil) {
+		return
+	}
+	r.syncBreakerConfig(providerID, nil).RecordSuccess()
+}
+
+func (r *SmartRouter) ReportFailure(providerID string) {
+	if !r.circuitBreakerEnabled(providerID, nil) {
+		return
+	}
+	r.syncBreakerConfig(providerID, nil).RecordFailure()
+}

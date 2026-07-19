@@ -270,6 +270,8 @@ func scanProvider(scan func(...any) error) (models.Provider, error) {
 		&p.ID, &p.Name, &p.BaseURL, &apiKey,
 		&p.IsHealthy, &healthCheckedAt,
 		&createdAt, &updatedAt,
+		&p.CircuitBreakerEnabled, &p.CircuitBreakerErrorThreshold,
+		&p.CircuitBreakerWindowSeconds, &p.CircuitBreakerCooldownSeconds,
 	)
 	if err != nil {
 		return models.Provider{}, err
