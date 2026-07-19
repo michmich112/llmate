@@ -38,6 +38,8 @@ func TestHandleDiscover_Success(t *testing.T) {
 			w.WriteHeader(http.StatusNotFound)
 		case "/v1/embeddings":
 			w.WriteHeader(http.StatusOK)
+		case "/api/show":
+			w.WriteHeader(http.StatusOK)
 		default:
 			w.WriteHeader(http.StatusInternalServerError)
 		}
@@ -107,12 +109,13 @@ func TestHandleDiscover_Success(t *testing.T) {
 	assertSupported("/v1/chat/completions", &tr)
 	assertSupported("/v1/completions", &fa)
 	assertSupported("/v1/embeddings", &tr)
+	assertSupported("/api/show", &tr)
 	assertSupported("/v1/images/generations", nil)
 	assertSupported("/v1/audio/speech", nil)
 	assertSupported("/v1/audio/transcriptions", nil)
 
-	if len(result.Endpoints) != 6 {
-		t.Errorf("len(endpoints) = %d, want 6", len(result.Endpoints))
+	if len(result.Endpoints) != 7 {
+		t.Errorf("len(endpoints) = %d, want 7", len(result.Endpoints))
 	}
 }
 

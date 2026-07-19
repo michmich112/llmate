@@ -5,6 +5,8 @@
   import type { Provider, ProviderEndpoint, ProviderModel, DiscoveryResult, ConfirmEndpointInput } from '$lib/types';
   import { Button } from '$lib/components/ui/button';
   import { Input } from '$lib/components/ui/input';
+  import { Label } from '$lib/components/ui/label';
+  import { Switch } from '$lib/components/ui/switch';
   import { Card, CardHeader, CardTitle, CardContent } from '$lib/components/ui/card';
   import StatusBadge from '$lib/components/StatusBadge.svelte';
 
@@ -20,6 +22,10 @@
   let editName = $state('');
   let editBaseUrl = $state('');
   let editApiKey = $state('');
+  let editCBEnabled = $state(true);
+  let editCBThreshold = $state('0.5');
+  let editCBWindow = $state('60');
+  let editCBCooldown = $state('30');
   let saveLoading = $state(false);
   let saveError = $state<string | null>(null);
   let saveSuccess = $state(false);
@@ -135,6 +141,10 @@
       editName = data.provider.name;
       editBaseUrl = data.provider.base_url;
       editApiKey = '';
+      editCBEnabled = data.provider.circuit_breaker_enabled ?? true;
+      editCBThreshold = String(data.provider.circuit_breaker_error_threshold ?? 0.5);
+      editCBWindow = String(data.provider.circuit_breaker_window_seconds ?? 60);
+      editCBCooldown = String(data.provider.circuit_breaker_cooldown_seconds ?? 30);
       data.models.forEach(initCostDraft);
     } catch (e) {
       error = e instanceof Error ? e.message : 'Failed to load provider';
@@ -149,14 +159,39 @@
     saveError = null;
     saveSuccess = false;
     try {
+      const threshold = parseFloat(editCBThreshold);
+      const windowSec = parseInt(editCBWindow, 10);
+      const cooldownSec = parseInt(editCBCooldown, 10);
+      if (editCBEnabled) {
+        if (!(threshold > 0 && threshold <= 1)) {
+          saveError = 'Error threshold must be greater than 0 and at most 1 (e.g. 0.5 for 50%).';
+          return;
+        }
+        if (!(windowSec > 0)) {
+          saveError = 'Window seconds must be greater than 0.';
+          return;
+        }
+        if (!(cooldownSec > 0)) {
+          saveError = 'Cooldown seconds must be greater than 0.';
+          return;
+        }
+      }
       const updateData: Partial<Provider> = {
         name: editName.trim(),
-        base_url: editBaseUrl.trim()
+        base_url: editBaseUrl.trim(),
+        circuit_breaker_enabled: editCBEnabled,
+        circuit_breaker_error_threshold: threshold || 0.5,
+        circuit_breaker_window_seconds: windowSec || 60,
+        circuit_breaker_cooldown_seconds: cooldownSec || 30
       };
       if (editApiKey.trim()) {
         updateData.api_key = editApiKey.trim();
       }
       provider = await api.updateProvider(provider.id, updateData);
+      editCBEnabled = provider.circuit_breaker_enabled;
+      editCBThreshold = String(provider.circuit_breaker_error_threshold);
+      editCBWindow = String(provider.circuit_breaker_window_seconds);
+      editCBCooldown = String(provider.circuit_breaker_cooldown_seconds);
       saveSuccess = true;
     } catch (e) {
       saveError = e instanceof Error ? e.message : 'Failed to save provider';
@@ -397,6 +432,61 @@
             <span class="ml-1 text-xs font-normal text-muted-foreground">(leave blank to keep existing)</span>
           </label>
           <Input id="edit-key" type="password" bind:value={editApiKey} placeholder="Enter new key to update" />
+        </div>
+
+        <div class="space-y-4 rounded-md border p-4">
+          <div class="flex items-center justify-between gap-4">
+            <div class="space-y-1">
+              <Label for="edit-cb-enabled">Circuit breaker</Label>
+              <p class="text-xs text-muted-foreground leading-relaxed">
+                Temporarily stops routing to this provider when its recent error rate is too high.
+                Disable if client cancels or flaky probes are causing false 503s.
+              </p>
+            </div>
+            <Switch
+              id="edit-cb-enabled"
+              checked={editCBEnabled}
+              onCheckedChange={(v: boolean) => (editCBEnabled = v)}
+            />
+          </div>
+
+          <div class={editCBEnabled ? 'grid gap-4 sm:grid-cols-3' : 'grid gap-4 sm:grid-cols-3 opacity-50'}>
+            <div class="space-y-2">
+              <Label for="edit-cb-threshold">Error threshold</Label>
+              <Input
+                id="edit-cb-threshold"
+                type="number"
+                min="0.01"
+                max="1"
+                step="0.05"
+                bind:value={editCBThreshold}
+                disabled={!editCBEnabled}
+              />
+              <p class="text-xs text-muted-foreground">Fraction 0–1 (0.5 = 50%)</p>
+            </div>
+            <div class="space-y-2">
+              <Label for="edit-cb-window">Window (seconds)</Label>
+              <Input
+                id="edit-cb-window"
+                type="number"
+                min="1"
+                step="1"
+                bind:value={editCBWindow}
+                disabled={!editCBEnabled}
+              />
+            </div>
+            <div class="space-y-2">
+              <Label for="edit-cb-cooldown">Cooldown (seconds)</Label>
+              <Input
+                id="edit-cb-cooldown"
+                type="number"
+                min="1"
+                step="1"
+                bind:value={editCBCooldown}
+                disabled={!editCBEnabled}
+              />
+            </div>
+          </div>
         </div>
 
         <div class="flex justify-end">

@@ -132,6 +132,7 @@ func main() {
 	r.Post("/v1/audio/transcriptions", proxyHandler.HandleAudioTranscriptions)
 	r.Get("/v1/models", proxyHandler.HandleListModels)
 	r.Get("/v1/models/{model}", proxyHandler.HandleGetModel)
+	r.Post("/api/show", proxyHandler.HandleShow)
 
 	r.Route("/admin", func(r chi.Router) {
 		r.Use(auth.AccessKeyMiddleware(cfg.AccessKey))

@@ -42,6 +42,21 @@ func NewCircuitBreaker() *CircuitBreaker {
 	}
 }
 
+// Configure updates breaker thresholds. Safe to call concurrently.
+func (cb *CircuitBreaker) Configure(errorThreshold float64, windowSize, cooldownPeriod time.Duration) {
+	cb.mu.Lock()
+	defer cb.mu.Unlock()
+	if errorThreshold > 0 && errorThreshold <= 1 {
+		cb.errorThreshold = errorThreshold
+	}
+	if windowSize > 0 {
+		cb.windowSize = windowSize
+	}
+	if cooldownPeriod > 0 {
+		cb.cooldownPeriod = cooldownPeriod
+	}
+}
+
 // prune removes entries older than now-windowSize from both slices.
 // Must be called with mu held.
 func (cb *CircuitBreaker) prune(now time.Time) {

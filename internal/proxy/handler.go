@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -19,6 +20,12 @@ import (
 	"github.com/llmate/gateway/internal/middleware"
 	"github.com/llmate/gateway/internal/models"
 )
+
+// isClientCanceled reports whether err is a client-side request cancellation.
+// These must not trip the provider circuit breaker.
+func isClientCanceled(err error) bool {
+	return err != nil && errors.Is(err, context.Canceled)
+}
 
 const maxProxyAttempts = 3
 
@@ -105,6 +112,25 @@ func extractModelFromJSON(body []byte) (string, error) {
 		return "", fmt.Errorf("model field is required")
 	}
 	return obj.Model, nil
+}
+
+// extractModelFromShowRequest reads the model from an Ollama /api/show request body.
+// Ollama accepts "model" (current) or deprecated "name".
+func extractModelFromShowRequest(body []byte) (string, error) {
+	var obj struct {
+		Model string `json:"model"`
+		Name  string `json:"name"`
+	}
+	if err := json.Unmarshal(body, &obj); err != nil {
+		return "", fmt.Errorf("parsing request body: %w", err)
+	}
+	if obj.Model != "" {
+		return obj.Model, nil
+	}
+	if obj.Name != "" {
+		return obj.Name, nil
+	}
+	return "", fmt.Errorf("model is required")
 }
 
 func extractModelFromMultipart(r *http.Request) (string, error) {
@@ -241,7 +267,12 @@ func rewriteModelInBody(body []byte, resolvedModelID string) ([]byte, error) {
 	if err != nil {
 		return body, fmt.Errorf("encoding resolved model ID: %w", err)
 	}
-	obj["model"] = json.RawMessage(encoded)
+	if _, ok := obj["model"]; ok {
+		obj["model"] = json.RawMessage(encoded)
+	}
+	if _, ok := obj["name"]; ok {
+		obj["name"] = json.RawMessage(encoded)
+	}
 	out, err := json.Marshal(obj)
 	if err != nil {
 		return body, fmt.Errorf("re-encoding body after model rewrite: %w", err)
@@ -376,6 +407,13 @@ func (h *Handler) proxyNonStreaming(w http.ResponseWriter, r *http.Request, body
 
 		resp, err := h.client.Do(req)
 		if err != nil {
+			if isClientCanceled(err) {
+				log.StatusCode = 499
+				log.ErrorMessage = "client canceled request"
+				log.TotalTimeMs = int(time.Since(startTime).Milliseconds())
+				h.metrics.Record(log)
+				return
+			}
 			h.router.ReportFailure(route.Provider.ID)
 			if attempt < maxProxyAttempts {
 				continue
@@ -391,6 +429,13 @@ func (h *Handler) proxyNonStreaming(w http.ResponseWriter, r *http.Request, body
 		respBody, readErr := io.ReadAll(resp.Body)
 		resp.Body.Close()
 		if readErr != nil {
+			if isClientCanceled(readErr) {
+				log.StatusCode = 499
+				log.ErrorMessage = "client canceled request"
+				log.TotalTimeMs = int(time.Since(startTime).Milliseconds())
+				h.metrics.Record(log)
+				return
+			}
 			h.router.ReportFailure(route.Provider.ID)
 			if attempt < maxProxyAttempts {
 				continue
@@ -535,6 +580,23 @@ func (h *Handler) HandleCompletions(w http.ResponseWriter, r *http.Request) {
 	h.proxyNonStreaming(w, r, body, model, "/v1/completions", false, startTime)
 }
 
+// HandleShow handles POST /api/show (Ollama-compatible model metadata).
+func (h *Handler) HandleShow(w http.ResponseWriter, r *http.Request) {
+	startTime := time.Now()
+	r.Body = http.MaxBytesReader(w, r.Body, 32<<20)
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		respondError(w, 400, "failed to read request body")
+		return
+	}
+	model, err := extractModelFromShowRequest(body)
+	if err != nil {
+		respondError(w, 400, err.Error())
+		return
+	}
+	h.proxyNonStreaming(w, r, body, model, "/api/show", false, startTime)
+}
+
 // HandleEmbeddings handles POST /v1/embeddings.
 func (h *Handler) HandleEmbeddings(w http.ResponseWriter, r *http.Request) {
 	startTime := time.Now()
@@ -673,6 +735,13 @@ func (h *Handler) HandleAudioTranscriptions(w http.ResponseWriter, r *http.Reque
 
 		resp, doErr := h.client.Do(req)
 		if doErr != nil {
+			if isClientCanceled(doErr) {
+				log.StatusCode = 499
+				log.ErrorMessage = "client canceled request"
+				log.TotalTimeMs = int(time.Since(startTime).Milliseconds())
+				h.metrics.Record(log)
+				return
+			}
 			h.router.ReportFailure(route.Provider.ID)
 			if attempt < maxProxyAttempts {
 				continue
@@ -688,6 +757,13 @@ func (h *Handler) HandleAudioTranscriptions(w http.ResponseWriter, r *http.Reque
 		respBody, readErr := io.ReadAll(resp.Body)
 		resp.Body.Close()
 		if readErr != nil {
+			if isClientCanceled(readErr) {
+				log.StatusCode = 499
+				log.ErrorMessage = "client canceled request"
+				log.TotalTimeMs = int(time.Since(startTime).Milliseconds())
+				h.metrics.Record(log)
+				return
+			}
 			h.router.ReportFailure(route.Provider.ID)
 			if attempt < maxProxyAttempts {
 				continue
@@ -896,6 +972,13 @@ func (h *Handler) handleStreamingRequest(w http.ResponseWriter, r *http.Request,
 
 		resp, err = h.client.Do(req)
 		if err != nil {
+			if isClientCanceled(err) {
+				log.StatusCode = 499
+				log.ErrorMessage = "client canceled request"
+				log.TotalTimeMs = int(time.Since(startTime).Milliseconds())
+				h.metrics.Record(log)
+				return
+			}
 			h.router.ReportFailure(route.Provider.ID)
 			if attempt < maxProxyAttempts {
 				continue
@@ -965,7 +1048,9 @@ func (h *Handler) handleStreamingRequest(w http.ResponseWriter, r *http.Request,
 	log.TotalTimeMs = int(time.Since(startTime).Milliseconds())
 
 	if streamErr != nil {
-		h.router.ReportFailure(route.Provider.ID)
+		if !isClientCanceled(streamErr) {
+			h.router.ReportFailure(route.Provider.ID)
+		}
 		log.StatusCode = http.StatusOK // headers already sent
 		log.ErrorMessage = fmt.Sprintf("stream error: %v", streamErr)
 	} else {

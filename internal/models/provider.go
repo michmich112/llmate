@@ -11,6 +11,32 @@ type Provider struct {
 	HealthCheckedAt *time.Time `json:"health_checked_at,omitempty"`
 	CreatedAt       time.Time  `json:"created_at"`
 	UpdatedAt       time.Time  `json:"updated_at"`
+
+	// Circuit breaker (per provider). Defaults applied on create.
+	CircuitBreakerEnabled         bool    `json:"circuit_breaker_enabled"`
+	CircuitBreakerErrorThreshold  float64 `json:"circuit_breaker_error_threshold"`
+	CircuitBreakerWindowSeconds   int     `json:"circuit_breaker_window_seconds"`
+	CircuitBreakerCooldownSeconds int     `json:"circuit_breaker_cooldown_seconds"`
+}
+
+const (
+	DefaultCircuitBreakerErrorThreshold  = 0.5
+	DefaultCircuitBreakerWindowSeconds   = 60
+	DefaultCircuitBreakerCooldownSeconds = 30
+)
+
+// NormalizeCircuitBreaker fills zero/invalid numeric CB settings with defaults.
+// It does not change CircuitBreakerEnabled.
+func NormalizeCircuitBreaker(p *Provider) {
+	if p.CircuitBreakerErrorThreshold <= 0 || p.CircuitBreakerErrorThreshold > 1 {
+		p.CircuitBreakerErrorThreshold = DefaultCircuitBreakerErrorThreshold
+	}
+	if p.CircuitBreakerWindowSeconds <= 0 {
+		p.CircuitBreakerWindowSeconds = DefaultCircuitBreakerWindowSeconds
+	}
+	if p.CircuitBreakerCooldownSeconds <= 0 {
+		p.CircuitBreakerCooldownSeconds = DefaultCircuitBreakerCooldownSeconds
+	}
 }
 
 type ProviderEndpoint struct {

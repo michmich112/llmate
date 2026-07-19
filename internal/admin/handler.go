@@ -203,13 +203,17 @@ func (h *Handler) HandleCreateProvider(w http.ResponseWriter, r *http.Request) {
 
 	now := time.Now().UTC()
 	p := models.Provider{
-		ID:        uuid.NewString(),
-		Name:      body.Name,
-		BaseURL:   body.BaseURL,
-		APIKey:    body.APIKey,
-		IsHealthy: false,
-		CreatedAt: now,
-		UpdatedAt: now,
+		ID:                            uuid.NewString(),
+		Name:                          body.Name,
+		BaseURL:                       body.BaseURL,
+		APIKey:                        body.APIKey,
+		IsHealthy:                     false,
+		CircuitBreakerEnabled:         true,
+		CircuitBreakerErrorThreshold:  models.DefaultCircuitBreakerErrorThreshold,
+		CircuitBreakerWindowSeconds:   models.DefaultCircuitBreakerWindowSeconds,
+		CircuitBreakerCooldownSeconds: models.DefaultCircuitBreakerCooldownSeconds,
+		CreatedAt:                     now,
+		UpdatedAt:                     now,
 	}
 	if err := h.store.CreateProvider(r.Context(), &p); err != nil {
 		respondError(w, http.StatusInternalServerError, "failed to create provider")
@@ -271,9 +275,13 @@ func (h *Handler) HandleUpdateProvider(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var body struct {
-		Name    string `json:"name"`
-		BaseURL string `json:"base_url"`
-		APIKey  string `json:"api_key"`
+		Name                          string   `json:"name"`
+		BaseURL                       string   `json:"base_url"`
+		APIKey                        string   `json:"api_key"`
+		CircuitBreakerEnabled         *bool    `json:"circuit_breaker_enabled"`
+		CircuitBreakerErrorThreshold  *float64 `json:"circuit_breaker_error_threshold"`
+		CircuitBreakerWindowSeconds   *int     `json:"circuit_breaker_window_seconds"`
+		CircuitBreakerCooldownSeconds *int     `json:"circuit_breaker_cooldown_seconds"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		respondError(w, http.StatusBadRequest, "invalid JSON body")
@@ -285,6 +293,21 @@ func (h *Handler) HandleUpdateProvider(w http.ResponseWriter, r *http.Request) {
 	}
 	if strings.TrimSpace(body.BaseURL) == "" {
 		respondError(w, http.StatusBadRequest, "base_url is required")
+		return
+	}
+	if body.CircuitBreakerErrorThreshold != nil {
+		t := *body.CircuitBreakerErrorThreshold
+		if t <= 0 || t > 1 {
+			respondError(w, http.StatusBadRequest, "circuit_breaker_error_threshold must be > 0 and <= 1")
+			return
+		}
+	}
+	if body.CircuitBreakerWindowSeconds != nil && *body.CircuitBreakerWindowSeconds <= 0 {
+		respondError(w, http.StatusBadRequest, "circuit_breaker_window_seconds must be > 0")
+		return
+	}
+	if body.CircuitBreakerCooldownSeconds != nil && *body.CircuitBreakerCooldownSeconds <= 0 {
+		respondError(w, http.StatusBadRequest, "circuit_breaker_cooldown_seconds must be > 0")
 		return
 	}
 
@@ -301,7 +324,22 @@ func (h *Handler) HandleUpdateProvider(w http.ResponseWriter, r *http.Request) {
 	merged := *existing
 	merged.Name = body.Name
 	merged.BaseURL = body.BaseURL
-	merged.APIKey = body.APIKey
+	if body.APIKey != "" {
+		merged.APIKey = body.APIKey
+	}
+	if body.CircuitBreakerEnabled != nil {
+		merged.CircuitBreakerEnabled = *body.CircuitBreakerEnabled
+	}
+	if body.CircuitBreakerErrorThreshold != nil {
+		merged.CircuitBreakerErrorThreshold = *body.CircuitBreakerErrorThreshold
+	}
+	if body.CircuitBreakerWindowSeconds != nil {
+		merged.CircuitBreakerWindowSeconds = *body.CircuitBreakerWindowSeconds
+	}
+	if body.CircuitBreakerCooldownSeconds != nil {
+		merged.CircuitBreakerCooldownSeconds = *body.CircuitBreakerCooldownSeconds
+	}
+	models.NormalizeCircuitBreaker(&merged)
 	merged.UpdatedAt = time.Now().UTC()
 
 	if err := h.store.UpdateProvider(r.Context(), &merged); err != nil {
