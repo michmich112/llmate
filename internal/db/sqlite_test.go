@@ -818,6 +818,32 @@ func TestDashboardStats_GroupsByResolvedModel(t *testing.T) {
 	}
 }
 
+func TestDashboardStats_FallsBackToRequestedWhenUnresolved(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Second)
+
+	p := newProvider(uuid.NewString(), "Unresolved Stats", "https://unresolved-stats.test", false, now)
+	if err := store.CreateProvider(ctx, p); err != nil {
+		t.Fatalf("CreateProvider: %v", err)
+	}
+	l := &models.RequestLog{
+		ID: uuid.NewString(), Timestamp: now, ClientIP: "127.0.0.1",
+		Method: "POST", Path: "/v1/chat/completions", RequestedModel: "fast",
+		ProviderID: p.ID, ProviderName: p.Name, StatusCode: 503, TotalTimeMs: 1, CreatedAt: now,
+	}
+	if err := store.InsertRequestLog(ctx, l); err != nil {
+		t.Fatalf("InsertRequestLog: %v", err)
+	}
+	stats, err := store.GetDashboardStats(ctx, now.Add(-time.Minute), now.Add(time.Minute))
+	if err != nil {
+		t.Fatalf("GetDashboardStats: %v", err)
+	}
+	if len(stats.ByModel) != 1 || stats.ByModel[0].Model != "fast" {
+		t.Fatalf("expected fallback to requested model, got %+v", stats.ByModel)
+	}
+}
+
 func TestLifetimeCost(t *testing.T) {
 	store := newTestStore(t)
 	ctx := context.Background()
@@ -882,6 +908,18 @@ func TestLifetimeCost(t *testing.T) {
 	}
 	if cost.FirstRequest == nil || cost.LastRequest == nil {
 		t.Fatal("expected first/last request timestamps")
+	}
+
+	emptyStore := newTestStore(t)
+	empty, err := emptyStore.GetLifetimeCost(ctx)
+	if err != nil {
+		t.Fatalf("GetLifetimeCost empty: %v", err)
+	}
+	if empty.TotalRequests != 0 || empty.TotalCostUSD != 0 {
+		t.Errorf("expected zero lifetime cost on empty store, got %+v", empty)
+	}
+	if empty.FirstRequest != nil || empty.LastRequest != nil {
+		t.Errorf("expected nil first/last on empty store, got %+v", empty)
 	}
 }
 

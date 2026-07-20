@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -820,6 +821,69 @@ func TestGetStats_FromTo(t *testing.T) {
 	rec = serve(h, req)
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400 for missing to, got %d", rec.Code)
+	}
+}
+
+func TestGetTimeSeries_FromTo(t *testing.T) {
+	from := time.Now().UTC().Add(-24 * time.Hour).Format(time.RFC3339Nano)
+	to := time.Now().UTC().Format(time.RFC3339Nano)
+	called := false
+	h := testAdminHandlerWithStats(&mockStore{
+		getTimeSeries: func(_ context.Context, since, until time.Time, granularity string) ([]models.TimeSeriesPoint, error) {
+			called = true
+			if granularity != "hour" {
+				t.Fatalf("granularity: got %q, want hour", granularity)
+			}
+			if until.Before(since) {
+				t.Fatal("until before since")
+			}
+			return []models.TimeSeriesPoint{{Bucket: "2026-01-01T00:00:00", Requests: 1}}, nil
+		},
+	}, HandlerConfig{}, stats.NewAccumulator())
+
+	req := httptest.NewRequest(http.MethodGet, "/stats/timeseries?from="+url.QueryEscape(from)+"&to="+url.QueryEscape(to)+"&granularity=hour", nil)
+	rec := serve(h, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if !called {
+		t.Fatal("expected GetTimeSeries to be called for from/to window")
+	}
+}
+
+func TestParseStatsWindow(t *testing.T) {
+	from := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	to := time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC)
+
+	cases := []struct {
+		name    string
+		q       url.Values
+		wantDB  bool
+		wantErr bool
+	}{
+		{"relative since", url.Values{"since": []string{"7d"}}, false, false},
+		{"absolute from/to", url.Values{"from": []string{from.Format(time.RFC3339)}, "to": []string{to.Format(time.RFC3339)}}, true, false},
+		{"nano timestamps", url.Values{"from": []string{from.Format(time.RFC3339Nano)}, "to": []string{to.Format(time.RFC3339Nano)}}, true, false},
+		{"missing to", url.Values{"from": []string{from.Format(time.RFC3339)}}, false, true},
+		{"from after to", url.Values{"from": []string{to.Format(time.RFC3339)}, "to": []string{from.Format(time.RFC3339)}}, false, true},
+		{"invalid from", url.Values{"from": []string{"not-a-date"}, "to": []string{to.Format(time.RFC3339)}}, false, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, _, useDB, err := parseStatsWindow(tc.q)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatal("expected error")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if useDB != tc.wantDB {
+				t.Fatalf("useDB: got %v, want %v", useDB, tc.wantDB)
+			}
+		})
 	}
 }
 
