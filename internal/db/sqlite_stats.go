@@ -71,14 +71,14 @@ func (s *SQLiteStore) GetDashboardStats(ctx context.Context, since, until time.T
 
 	modelRows, err := s.db.QueryContext(ctx, `
 		SELECT
-			COALESCE(requested_model, '') AS model,
+			COALESCE(NULLIF(resolved_model, ''), requested_model, '') AS model,
 			COUNT(*) AS request_count,
 			AVG(CAST(total_time_ms AS REAL)) AS avg_latency_ms,
 			SUM(CASE WHEN status_code >= 400 THEN 1 ELSE 0 END) AS error_count,
 			COALESCE(SUM(COALESCE(total_tokens, 0)), 0) AS total_tokens
 		FROM request_logs
 		WHERE timestamp >= ? AND timestamp <= ?
-		GROUP BY requested_model
+		GROUP BY COALESCE(NULLIF(resolved_model, ''), requested_model, '')
 		ORDER BY request_count DESC
 	`, since, until)
 	if err != nil {

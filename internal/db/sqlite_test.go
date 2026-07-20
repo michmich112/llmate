@@ -707,6 +707,7 @@ func TestDashboardStats(t *testing.T) {
 			Method:         "POST",
 			Path:           "/v1/chat/completions",
 			RequestedModel: "gpt-4",
+			ResolvedModel:  "gpt-4",
 			ProviderID:     p.ID,
 			ProviderName:   "Stats Provider",
 			StatusCode:     sc,
@@ -764,6 +765,56 @@ func TestDashboardStats(t *testing.T) {
 	}
 	if empty.ByProvider == nil {
 		t.Error("ByProvider should not be nil (must be empty slice)")
+	}
+}
+
+func TestDashboardStats_GroupsByResolvedModel(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Second)
+
+	p := newProvider(uuid.NewString(), "Alias Stats Provider", "https://alias-stats.test", false, now)
+	if err := store.CreateProvider(ctx, p); err != nil {
+		t.Fatalf("CreateProvider: %v", err)
+	}
+
+	tokens := 50
+	// Two alias requests that resolved to the same root model, plus one direct.
+	logs := []models.RequestLog{
+		{
+			ID: uuid.NewString(), Timestamp: now.Add(-2 * time.Minute), ClientIP: "127.0.0.1",
+			Method: "POST", Path: "/v1/chat/completions", RequestedModel: "fast", ResolvedModel: "llama3",
+			ProviderID: p.ID, ProviderName: p.Name, StatusCode: 200, TotalTimeMs: 10, TotalTokens: &tokens, CreatedAt: now,
+		},
+		{
+			ID: uuid.NewString(), Timestamp: now.Add(-time.Minute), ClientIP: "127.0.0.1",
+			Method: "POST", Path: "/v1/chat/completions", RequestedModel: "fast", ResolvedModel: "llama3",
+			ProviderID: p.ID, ProviderName: p.Name, StatusCode: 200, TotalTimeMs: 20, TotalTokens: &tokens, CreatedAt: now,
+		},
+		{
+			ID: uuid.NewString(), Timestamp: now, ClientIP: "127.0.0.1",
+			Method: "POST", Path: "/v1/chat/completions", RequestedModel: "llama3", ResolvedModel: "llama3",
+			ProviderID: p.ID, ProviderName: p.Name, StatusCode: 200, TotalTimeMs: 30, TotalTokens: &tokens, CreatedAt: now,
+		},
+	}
+	for i := range logs {
+		if err := store.InsertRequestLog(ctx, &logs[i]); err != nil {
+			t.Fatalf("InsertRequestLog: %v", err)
+		}
+	}
+
+	stats, err := store.GetDashboardStats(ctx, now.Add(-10*time.Minute), now.Add(time.Minute))
+	if err != nil {
+		t.Fatalf("GetDashboardStats: %v", err)
+	}
+	if len(stats.ByModel) != 1 {
+		t.Fatalf("ByModel length: got %d, want 1 (grouped by resolved model)", len(stats.ByModel))
+	}
+	if stats.ByModel[0].Model != "llama3" {
+		t.Errorf("ByModel[0].Model: got %q, want %q", stats.ByModel[0].Model, "llama3")
+	}
+	if stats.ByModel[0].RequestCount != 3 {
+		t.Errorf("ByModel[0].RequestCount: got %d, want 3", stats.ByModel[0].RequestCount)
 	}
 }
 

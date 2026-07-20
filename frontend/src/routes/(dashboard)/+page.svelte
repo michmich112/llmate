@@ -603,7 +603,7 @@
               <table class="w-full text-sm">
                 <thead>
                   <tr class="border-b bg-muted/50 text-left text-xs font-medium uppercase tracking-wide text-muted-foreground">
-                    <th class="px-4 py-3">Model</th>
+                    <th class="px-4 py-3">Resolved Model</th>
                     <th class="px-4 py-3 text-right">Requests</th>
                     <th class="px-4 py-3 text-right">Avg Latency</th>
                     <th class="px-4 py-3 text-right">Errors</th>
