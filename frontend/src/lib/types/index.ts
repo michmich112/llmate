@@ -107,6 +107,24 @@ export interface DashboardStats {
   by_provider: ProviderStats[];
 }
 
+export interface LifetimeCost {
+  total_cost_usd: number;
+  input_cost_usd: number;
+  output_cost_usd: number;
+  cached_cost_usd: number;
+  total_requests: number;
+  total_tokens: number;
+  first_request_at?: string;
+  last_request_at?: string;
+}
+
+/** Query window for dashboard stats — duration presets or absolute from/to */
+export interface StatsWindow {
+  since?: string;
+  from?: string;
+  to?: string;
+}
+
 export interface ModelStats {
   model: string;
   request_count: number;

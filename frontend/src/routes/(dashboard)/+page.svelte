@@ -1,19 +1,39 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { onMount, untrack } from 'svelte';
   import { api } from '$lib/api/client';
-  import type { DashboardStats, Provider, TimeSeriesPoint } from '$lib/types';
+  import type { DashboardStats, LifetimeCost, Provider, TimeSeriesPoint } from '$lib/types';
   import { Card, CardHeader, CardTitle, CardContent } from '$lib/components/ui/card';
   import { Button } from '$lib/components/ui/button';
+  import { Input } from '$lib/components/ui/input';
   import { Chart, LineController, BarController, LineElement, BarElement, PointElement, LinearScale, TimeScale, CategoryScale, Tooltip, Legend, Filler } from 'chart.js';
 
   Chart.register(LineController, BarController, LineElement, BarElement, PointElement, LinearScale, TimeScale, CategoryScale, Tooltip, Legend, Filler);
 
+  type TimeMode = '24h' | '7d' | '30d' | 'custom' | 'lifetime';
+
+  const emptyStats = (): DashboardStats => ({
+    total_requests: 0,
+    avg_latency_ms: 0,
+    error_rate: 0,
+    by_model: [],
+    by_provider: []
+  });
+
   let stats = $state<DashboardStats | null>(null);
   let providers = $state<Provider[]>([]);
   let tsPoints = $state<TimeSeriesPoint[]>([]);
+  let lifetimeCost = $state<LifetimeCost | null>(null);
   let loading = $state(true);
   let error = $state<string | null>(null);
-  let timeRange = $state('24h');
+  let timeMode = $state<TimeMode>('24h');
+  let fetchKey = $state(0);
+
+  // datetime-local draft values (not bound into the fetch effect)
+  let customFrom = $state('');
+  let customTo = $state('');
+  // Applied window used for custom fetches
+  let appliedFrom = $state('');
+  let appliedTo = $state('');
 
   // Chart metric selector - order: tokens, cost, requests
   type ChartMetric = 'tokens' | 'cost' | 'requests';
@@ -24,41 +44,143 @@
   let chartInstance: Chart | null = null;
   let breakdownExpanded = $state(false);
 
-  // Granularity follows the explicit rule: ≤48h → hourly, else daily
-  function granularityFor(range: string): 'hour' | 'day' {
+  const modeOptions: { id: TimeMode; label: string }[] = [
+    { id: '24h', label: '24h' },
+    { id: '7d', label: '7d' },
+    { id: '30d', label: '30d' },
+    { id: 'custom', label: 'Custom' },
+    { id: 'lifetime', label: 'Lifetime' }
+  ];
+
+  function toDatetimeLocal(d: Date): string {
+    const pad = (n: number) => String(n).padStart(2, '0');
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  }
+
+  function datetimeLocalToISO(value: string): string {
+    return new Date(value).toISOString();
+  }
+
+  /** Presets: 24h → hour, else day. Absolute windows: ≤48h → hour, else day. */
+  function granularityForPreset(range: string): 'hour' | 'day' {
     if (range === '24h') return 'hour';
     return 'day';
+  }
+
+  function granularityForAbsolute(fromISO: string, toISO: string): 'hour' | 'day' {
+    const ms = new Date(toISO).getTime() - new Date(fromISO).getTime();
+    return ms <= 48 * 60 * 60 * 1000 ? 'hour' : 'day';
+  }
+
+  function ensureCustomDefaults() {
+    if (customFrom && customTo) return;
+    const now = new Date();
+    const weekAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+    customFrom = toDatetimeLocal(weekAgo);
+    customTo = toDatetimeLocal(now);
+    if (!appliedFrom || !appliedTo) {
+      appliedFrom = customFrom;
+      appliedTo = customTo;
+    }
+  }
+
+  function selectMode(mode: TimeMode) {
+    if (mode === 'custom') {
+      ensureCustomDefaults();
+      if (!appliedFrom || !appliedTo) {
+        appliedFrom = customFrom;
+        appliedTo = customTo;
+      }
+    }
+    timeMode = mode;
+    fetchKey++;
+  }
+
+  function handleApplyCustom() {
+    if (!customFrom || !customTo) return;
+    appliedFrom = customFrom;
+    appliedTo = customTo;
+    fetchKey++;
+  }
+
+  function handleRefresh() {
+    fetchKey++;
   }
 
   async function fetchData() {
     loading = true;
     error = null;
+    const mode = timeMode;
+    const fromLocal = appliedFrom;
+    const toLocal = appliedTo;
+
     try {
-      const granularity = granularityFor(timeRange);
-      const [s, p, ts] = await Promise.all([
-        api.getStats(timeRange),
-        api.listProviders(),
-        api.getTimeSeries(timeRange, granularity)
-      ]);
-      stats = s;
-      providers = p;
-      tsPoints = ts.points;
+      if (mode === 'lifetime') {
+        const [lifetime, p] = await Promise.all([api.getLifetimeCost(), api.listProviders()]);
+        lifetimeCost = lifetime;
+        providers = p;
+
+        if (lifetime.first_request_at) {
+          const window = { from: lifetime.first_request_at, to: new Date().toISOString() };
+          const granularity = granularityForAbsolute(window.from, window.to);
+          const [s, ts] = await Promise.all([
+            api.getStats(window),
+            api.getTimeSeries(window, granularity)
+          ]);
+          stats = s;
+          tsPoints = ts.points;
+        } else {
+          stats = emptyStats();
+          tsPoints = [];
+        }
+      } else if (mode === 'custom') {
+        lifetimeCost = null;
+        if (!fromLocal || !toLocal) {
+          stats = emptyStats();
+          tsPoints = [];
+          providers = await api.listProviders();
+          return;
+        }
+        const from = datetimeLocalToISO(fromLocal);
+        const to = datetimeLocalToISO(toLocal);
+        const window = { from, to };
+        const granularity = granularityForAbsolute(from, to);
+        const [s, p, ts] = await Promise.all([
+          api.getStats(window),
+          api.listProviders(),
+          api.getTimeSeries(window, granularity)
+        ]);
+        stats = s;
+        providers = p;
+        tsPoints = ts.points;
+      } else {
+        lifetimeCost = null;
+        const granularity = granularityForPreset(mode);
+        const [s, p, ts] = await Promise.all([
+          api.getStats(mode),
+          api.listProviders(),
+          api.getTimeSeries(mode, granularity)
+        ]);
+        stats = s;
+        providers = p;
+        tsPoints = ts.points;
+      }
     } catch (e) {
       error = e instanceof Error ? e.message : 'Failed to load dashboard';
       stats = null;
       tsPoints = [];
+      if (mode !== 'lifetime') lifetimeCost = null;
     } finally {
       loading = false;
     }
   }
 
-  function handleRefresh() {
-    fetchData();
-  }
-
+  // Refetch only when fetchKey changes (mode select, Apply, Refresh) — not on date keystrokes
   $effect(() => {
-    timeRange; // track for reactivity
-    fetchData();
+    fetchKey;
+    untrack(() => {
+      void fetchData();
+    });
   });
 
   // Rebuild chart whenever data or metric changes
@@ -176,8 +298,8 @@
         responsive: true,
         maintainAspectRatio: false,
         plugins: {
-          legend: { 
-            display: true, 
+          legend: {
+            display: true,
             position: 'bottom',
             labels: {
               usePointStyle: true,
@@ -191,7 +313,7 @@
           }
         },
         scales: {
-          x: { 
+          x: {
             grid: { display: false },
             offset: chartType === 'bar'
           },
@@ -216,11 +338,34 @@
     stats ? (stats.error_rate * 100).toFixed(1) + '%' : '—'
   );
 
-  // Total cost across time series window
+  // Lifetime mode uses API totals; otherwise sum of timeseries points
   let totalCostDisplay = $derived(
-    tsPoints.length > 0
-      ? '$' + tsPoints.reduce((s, p) => s + p.total_cost_usd, 0).toFixed(4)
-      : '—'
+    timeMode === 'lifetime' && lifetimeCost
+      ? '$' + lifetimeCost.total_cost_usd.toFixed(4)
+      : tsPoints.length > 0
+        ? '$' + tsPoints.reduce((s, p) => s + p.total_cost_usd, 0).toFixed(4)
+        : '—'
+  );
+
+  let breakdownTotalCost = $derived(
+    timeMode === 'lifetime' && lifetimeCost
+      ? lifetimeCost.total_cost_usd
+      : tsPoints.reduce((s, p) => s + p.total_cost_usd, 0)
+  );
+  let breakdownInputCost = $derived(
+    timeMode === 'lifetime' && lifetimeCost
+      ? lifetimeCost.input_cost_usd
+      : tsPoints.reduce((s, p) => s + p.input_cost_usd, 0)
+  );
+  let breakdownOutputCost = $derived(
+    timeMode === 'lifetime' && lifetimeCost
+      ? lifetimeCost.output_cost_usd
+      : tsPoints.reduce((s, p) => s + p.output_cost_usd, 0)
+  );
+  let breakdownCachedCost = $derived(
+    timeMode === 'lifetime' && lifetimeCost
+      ? lifetimeCost.cached_cost_usd
+      : tsPoints.reduce((s, p) => s + p.cached_cost_usd, 0)
   );
 </script>
 
@@ -228,15 +373,15 @@
   <div class="flex items-center justify-between">
     <h1 class="text-2xl font-bold tracking-tight">Dashboard</h1>
     <div class="flex items-center gap-2">
-      {#each ['24h', '7d', '30d'] as range}
+      {#each modeOptions as opt (opt.id)}
         <button
           type="button"
-          onclick={() => (timeRange = range)}
-          class="rounded-md px-3 py-1.5 text-sm font-medium transition-colors {timeRange === range
+          onclick={() => selectMode(opt.id)}
+          class="rounded-md px-3 py-1.5 text-sm font-medium transition-colors {timeMode === opt.id
             ? 'bg-primary text-primary-foreground'
             : 'border border-input bg-background hover:bg-accent'}"
         >
-          {range}
+          {opt.label}
         </button>
       {/each}
       <div class="h-8 w-px bg-border"></div>
@@ -252,6 +397,22 @@
     </div>
   </div>
 
+  {#if timeMode === 'custom'}
+    <div class="flex flex-wrap items-end gap-3">
+      <div class="space-y-1">
+        <label for="custom-from" class="text-xs font-medium text-muted-foreground">From</label>
+        <Input id="custom-from" type="datetime-local" bind:value={customFrom} class="w-auto" />
+      </div>
+      <div class="space-y-1">
+        <label for="custom-to" class="text-xs font-medium text-muted-foreground">To</label>
+        <Input id="custom-to" type="datetime-local" bind:value={customTo} class="w-auto" />
+      </div>
+      <Button size="sm" onclick={handleApplyCustom} disabled={loading || !customFrom || !customTo}>
+        Apply
+      </Button>
+    </div>
+  {/if}
+
   {#if error}
     <div class="rounded-md border border-destructive/50 bg-destructive/10 px-4 py-3 text-sm text-destructive">
       {error}
@@ -260,7 +421,7 @@
 
   {#if loading}
     <div class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
-      {#each [1, 2, 3, 4] as _}
+      {#each [1, 2, 3, 4] as n (n)}
         <div class="h-28 animate-pulse rounded-lg bg-muted"></div>
       {/each}
     </div>
@@ -296,11 +457,22 @@
 
       <Card>
         <CardHeader>
-          <CardTitle class="text-sm font-medium text-muted-foreground">Est. Total Cost</CardTitle>
+          <CardTitle class="text-sm font-medium text-muted-foreground">
+            Est. Total Cost
+            {#if timeMode === 'lifetime'}
+              <span class="ml-1.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">Lifetime</span>
+            {/if}
+          </CardTitle>
         </CardHeader>
         <CardContent>
           <p class="text-3xl font-bold tabular-nums">{totalCostDisplay}</p>
-          <p class="mt-1 text-xs text-muted-foreground">{activeProviders} healthy provider{activeProviders !== 1 ? 's' : ''}</p>
+          {#if timeMode === 'lifetime' && lifetimeCost}
+            <p class="mt-1 text-xs text-muted-foreground">
+              In ${lifetimeCost.input_cost_usd.toFixed(4)} · Out ${lifetimeCost.output_cost_usd.toFixed(4)} · Cached ${lifetimeCost.cached_cost_usd.toFixed(4)}
+            </p>
+          {:else}
+            <p class="mt-1 text-xs text-muted-foreground">{activeProviders} healthy provider{activeProviders !== 1 ? 's' : ''}</p>
+          {/if}
         </CardContent>
       </Card>
     </div>
@@ -311,7 +483,7 @@
         <div class="flex items-center justify-between">
           <CardTitle>Usage Over Time</CardTitle>
           <div class="flex gap-1">
-            {#each [['tokens', 'Tokens'], ['cost', 'Cost'], ['requests', 'Requests']] as [key, label]}
+            {#each [['tokens', 'Tokens'], ['cost', 'Cost'], ['requests', 'Requests']] as [key, label] (key)}
               <button
                 type="button"
                 onclick={() => (chartMetric = key as ChartMetric)}
@@ -333,16 +505,18 @@
             <canvas bind:this={chartCanvas}></canvas>
           </div>
         {/if}
-        
+
         <!-- Breakdown Section (expandable) -->
-        {#if breakdownExpanded && tsPoints.length > 0}
+        {#if breakdownExpanded && (tsPoints.length > 0 || (timeMode === 'lifetime' && lifetimeCost))}
           <div class="mt-4 border-t pt-4">
             <!-- Tokens Row -->
             <div class="grid grid-cols-2 gap-4 sm:grid-cols-4">
               <div class="border-b border-r border-muted p-3">
                 <p class="text-xs text-muted-foreground">Total Tokens</p>
                 <p class="text-xl font-bold">
-                  {tsPoints.reduce((s, p) => s + p.total_tokens, 0).toLocaleString()}
+                  {timeMode === 'lifetime' && lifetimeCost
+                    ? lifetimeCost.total_tokens.toLocaleString()
+                    : tsPoints.reduce((s, p) => s + p.total_tokens, 0).toLocaleString()}
                 </p>
               </div>
               <div class="border-b border-r border-muted p-3">
@@ -369,33 +543,33 @@
               <div class="border-b border-r border-muted p-3">
                 <p class="text-xs text-muted-foreground">Total Cost</p>
                 <p class="text-xl font-bold">
-                  ${tsPoints.reduce((s, p) => s + p.total_cost_usd, 0).toFixed(4)}
+                  ${breakdownTotalCost.toFixed(4)}
                 </p>
               </div>
               <div class="border-b border-r border-muted p-3">
                 <p class="text-xs text-muted-foreground">Input Cost</p>
                 <p class="text-xl font-bold">
-                  ${tsPoints.reduce((s, p) => s + p.input_cost_usd, 0).toFixed(4)}
+                  ${breakdownInputCost.toFixed(4)}
                 </p>
               </div>
               <div class="border-b border-r border-muted p-3">
                 <p class="text-xs text-muted-foreground">Output Cost</p>
                 <p class="text-xl font-bold">
-                  ${tsPoints.reduce((s, p) => s + p.output_cost_usd, 0).toFixed(4)}
+                  ${breakdownOutputCost.toFixed(4)}
                 </p>
               </div>
               <div class="border-b p-3">
                 <p class="text-xs text-muted-foreground">Cached Cost</p>
                 <p class="text-xl font-bold">
-                  ${tsPoints.reduce((s, p) => s + p.cached_cost_usd, 0).toFixed(4)}
+                  ${breakdownCachedCost.toFixed(4)}
                 </p>
               </div>
             </div>
           </div>
         {/if}
-        
+
         <!-- Expand/Collapse Toggle -->
-        {#if tsPoints.length > 0}
+        {#if tsPoints.length > 0 || (timeMode === 'lifetime' && lifetimeCost)}
           <div class="mt-3 text-center">
             <button
               type="button"
@@ -437,7 +611,7 @@
                   </tr>
                 </thead>
                 <tbody>
-                  {#each stats.by_model as row}
+                  {#each stats.by_model as row (row.model)}
                     <tr class="border-b last:border-0 hover:bg-muted/30">
                       <td class="max-w-[160px] px-4 py-3 font-medium" title={row.model}>
                         <div class="truncate">{row.model}</div>
@@ -473,7 +647,7 @@
                 </tr>
               </thead>
               <tbody>
-                {#each stats.by_provider as row}
+                {#each stats.by_provider as row (row.provider_id)}
                   <tr class="border-b last:border-0 hover:bg-muted/30">
                     <td class="max-w-[180px] truncate px-4 py-3 font-medium" title={row.provider_name}>{row.provider_name}</td>
                     <td class="px-4 py-3 text-right">{row.request_count.toLocaleString()}</td>

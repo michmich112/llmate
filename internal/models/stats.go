@@ -1,11 +1,23 @@
 package models
 
 type DashboardStats struct {
-	TotalRequests  int          `json:"total_requests"`
-	AvgLatencyMs   float64      `json:"avg_latency_ms"`
-	ErrorRate      float64      `json:"error_rate"`
-	ByModel        []ModelStats `json:"by_model"`
+	TotalRequests  int             `json:"total_requests"`
+	AvgLatencyMs   float64         `json:"avg_latency_ms"`
+	ErrorRate      float64         `json:"error_rate"`
+	ByModel        []ModelStats    `json:"by_model"`
 	ByProvider     []ProviderStats `json:"by_provider"`
+}
+
+// LifetimeCost is the all-time estimated spend derived from request logs.
+type LifetimeCost struct {
+	TotalCostUSD  float64 `json:"total_cost_usd"`
+	InputCostUSD  float64 `json:"input_cost_usd"`
+	OutputCostUSD float64 `json:"output_cost_usd"`
+	CachedCostUSD float64 `json:"cached_cost_usd"`
+	TotalRequests int     `json:"total_requests"`
+	TotalTokens   int     `json:"total_tokens"`
+	FirstRequest  *string `json:"first_request_at,omitempty"`
+	LastRequest   *string `json:"last_request_at,omitempty"`
 }
 
 type ModelStats struct {

@@ -9,14 +9,40 @@ import (
 	"github.com/llmate/gateway/internal/models"
 )
 
-func (s *SQLiteStore) GetDashboardStats(ctx context.Context, since time.Time) (*models.DashboardStats, error) {
+// Cost expressions must match internal/pricing.ForRequestLog (subtract cached from
+// prompt for input rate; cache-read rate on cached_tokens).
+const (
+	sqlInputCostExpr = `COALESCE(SUM(
+		CASE
+		 WHEN pm.cost_per_million_input IS NOT NULL AND prompt_tokens IS NOT NULL
+		 THEN CAST(MAX(0, prompt_tokens - COALESCE(cached_tokens, 0)) AS REAL) / 1000000 * pm.cost_per_million_input
+		 ELSE 0
+		END
+	), 0)`
+	sqlOutputCostExpr = `COALESCE(SUM(
+		CASE
+		 WHEN pm.cost_per_million_output IS NOT NULL AND completion_tokens IS NOT NULL
+		 THEN CAST(completion_tokens AS REAL) / 1000000 * pm.cost_per_million_output
+		 ELSE 0
+		END
+	), 0)`
+	sqlCachedCostExpr = `COALESCE(SUM(
+		CASE
+		 WHEN pm.cost_per_million_cache_read IS NOT NULL AND cached_tokens IS NOT NULL AND cached_tokens > 0
+		 THEN CAST(cached_tokens AS REAL) / 1000000 * pm.cost_per_million_cache_read
+		 ELSE 0
+		END
+	), 0)`
+)
+
+func (s *SQLiteStore) GetDashboardStats(ctx context.Context, since, until time.Time) (*models.DashboardStats, error) {
 	stats := &models.DashboardStats{
 		ByModel:    []models.ModelStats{},
 		ByProvider: []models.ProviderStats{},
 	}
 
 	if err := s.db.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM request_logs WHERE timestamp >= ?`, since,
+		`SELECT COUNT(*) FROM request_logs WHERE timestamp >= ? AND timestamp <= ?`, since, until,
 	).Scan(&stats.TotalRequests); err != nil {
 		return nil, fmt.Errorf("dashboard stats total requests: %w", err)
 	}
@@ -24,7 +50,7 @@ func (s *SQLiteStore) GetDashboardStats(ctx context.Context, since time.Time) (*
 	if stats.TotalRequests > 0 {
 		var avgLatency sql.NullFloat64
 		if err := s.db.QueryRowContext(ctx,
-			`SELECT AVG(CAST(total_time_ms AS REAL)) FROM request_logs WHERE timestamp >= ?`, since,
+			`SELECT AVG(CAST(total_time_ms AS REAL)) FROM request_logs WHERE timestamp >= ? AND timestamp <= ?`, since, until,
 		).Scan(&avgLatency); err != nil {
 			return nil, fmt.Errorf("dashboard stats avg latency: %w", err)
 		}
@@ -34,7 +60,7 @@ func (s *SQLiteStore) GetDashboardStats(ctx context.Context, since time.Time) (*
 
 		var errorCount sql.NullInt64
 		if err := s.db.QueryRowContext(ctx,
-			`SELECT SUM(CASE WHEN status_code >= 400 THEN 1 ELSE 0 END) FROM request_logs WHERE timestamp >= ?`, since,
+			`SELECT SUM(CASE WHEN status_code >= 400 THEN 1 ELSE 0 END) FROM request_logs WHERE timestamp >= ? AND timestamp <= ?`, since, until,
 		).Scan(&errorCount); err != nil {
 			return nil, fmt.Errorf("dashboard stats error count: %w", err)
 		}
@@ -51,10 +77,10 @@ func (s *SQLiteStore) GetDashboardStats(ctx context.Context, since time.Time) (*
 			SUM(CASE WHEN status_code >= 400 THEN 1 ELSE 0 END) AS error_count,
 			COALESCE(SUM(COALESCE(total_tokens, 0)), 0) AS total_tokens
 		FROM request_logs
-		WHERE timestamp >= ?
+		WHERE timestamp >= ? AND timestamp <= ?
 		GROUP BY requested_model
 		ORDER BY request_count DESC
-	`, since)
+	`, since, until)
 	if err != nil {
 		return nil, fmt.Errorf("dashboard stats by model: %w", err)
 	}
@@ -84,10 +110,10 @@ func (s *SQLiteStore) GetDashboardStats(ctx context.Context, since time.Time) (*
 			SUM(CASE WHEN r.status_code >= 400 THEN 1 ELSE 0 END) AS error_count
 		FROM request_logs r
 		LEFT JOIN providers p ON p.id = r.provider_id
-		WHERE r.timestamp >= ?
+		WHERE r.timestamp >= ? AND r.timestamp <= ?
 		GROUP BY r.provider_id
 		ORDER BY request_count DESC
-	`, since)
+	`, since, until)
 	if err != nil {
 		return nil, fmt.Errorf("dashboard stats by provider: %w", err)
 	}
@@ -129,8 +155,6 @@ func (s *SQLiteStore) GetTimeSeries(ctx context.Context, since, until time.Time,
 		return nil, fmt.Errorf("invalid granularity %q: must be hour or day", granularity)
 	}
 
-	// Query with cost breakdown calculation using a join to provider_models.
-	// Per-request cost rules must match internal/pricing.ForRequestLog (subtract cached from prompt for input rate; cache-read rate on cached_tokens).
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT
 			`+bucketExpr+` AS bucket,
@@ -141,51 +165,10 @@ func (s *SQLiteStore) GetTimeSeries(ctx context.Context, since, until time.Time,
 			COALESCE(SUM(COALESCE(prompt_tokens, 0)), 0) AS prompt_tokens,
 			COALESCE(SUM(COALESCE(completion_tokens, 0)), 0) AS completion_tokens,
 			COALESCE(SUM(COALESCE(total_tokens, 0)), 0) AS total_tokens,
-			-- Recalculate total cost from token counts to avoid rounding errors from stored estimates
-			COALESCE(SUM(
-				CASE 
-				 WHEN pm.cost_per_million_input IS NOT NULL AND prompt_tokens IS NOT NULL 
-				 THEN CAST(MAX(0, prompt_tokens - COALESCE(cached_tokens, 0)) AS REAL) / 1000000 * pm.cost_per_million_input
-				 ELSE 0 
-				END
-			), 0)
-			+
-			COALESCE(SUM(
-				CASE 
-				 WHEN pm.cost_per_million_output IS NOT NULL AND completion_tokens IS NOT NULL 
-				 THEN CAST(completion_tokens AS REAL) / 1000000 * pm.cost_per_million_output
-				 ELSE 0 
-				END
-			), 0)
-			+
-			COALESCE(SUM(
-				CASE 
-				 WHEN pm.cost_per_million_cache_read IS NOT NULL AND cached_tokens IS NOT NULL AND cached_tokens > 0
-				 THEN CAST(cached_tokens AS REAL) / 1000000 * pm.cost_per_million_cache_read
-				 ELSE 0 
-				END
-			), 0) AS total_cost_usd,
-			COALESCE(SUM(
-				CASE 
-				 WHEN pm.cost_per_million_input IS NOT NULL AND prompt_tokens IS NOT NULL 
-				 THEN CAST(MAX(0, prompt_tokens - COALESCE(cached_tokens, 0)) AS REAL) / 1000000 * pm.cost_per_million_input
-				 ELSE 0 
-				END
-			), 0) AS input_cost_usd,
-			COALESCE(SUM(
-				CASE 
-				 WHEN pm.cost_per_million_output IS NOT NULL AND completion_tokens IS NOT NULL 
-				 THEN CAST(completion_tokens AS REAL) / 1000000 * pm.cost_per_million_output
-				 ELSE 0 
-				END
-			), 0) AS output_cost_usd,
-			COALESCE(SUM(
-				CASE 
-				 WHEN pm.cost_per_million_cache_read IS NOT NULL AND cached_tokens IS NOT NULL AND cached_tokens > 0
-				 THEN CAST(cached_tokens AS REAL) / 1000000 * pm.cost_per_million_cache_read
-				 ELSE 0 
-				END
-			), 0) AS cached_cost_usd,
+			`+sqlInputCostExpr+` + `+sqlOutputCostExpr+` + `+sqlCachedCostExpr+` AS total_cost_usd,
+			`+sqlInputCostExpr+` AS input_cost_usd,
+			`+sqlOutputCostExpr+` AS output_cost_usd,
+			`+sqlCachedCostExpr+` AS cached_cost_usd,
 			COALESCE(SUM(COALESCE(cached_tokens, 0)), 0) AS cached_tokens
 		FROM request_logs r
 		LEFT JOIN provider_models pm ON r.provider_id = pm.provider_id AND r.resolved_model = pm.model_id
@@ -235,4 +218,42 @@ func (s *SQLiteStore) GetTimeSeries(ctx context.Context, since, until time.Time,
 		}
 	}
 	return points, nil
+}
+
+func (s *SQLiteStore) GetLifetimeCost(ctx context.Context) (*models.LifetimeCost, error) {
+	out := &models.LifetimeCost{}
+	var first, last nullTimeScanner
+	err := s.db.QueryRowContext(ctx, `
+		SELECT
+			COUNT(*) AS total_requests,
+			COALESCE(SUM(COALESCE(r.total_tokens, 0)), 0) AS total_tokens,
+			`+sqlInputCostExpr+` AS input_cost_usd,
+			`+sqlOutputCostExpr+` AS output_cost_usd,
+			`+sqlCachedCostExpr+` AS cached_cost_usd,
+			MIN(r.timestamp) AS first_request_at,
+			MAX(r.timestamp) AS last_request_at
+		FROM request_logs r
+		LEFT JOIN provider_models pm ON r.provider_id = pm.provider_id AND r.resolved_model = pm.model_id
+	`).Scan(
+		&out.TotalRequests,
+		&out.TotalTokens,
+		&out.InputCostUSD,
+		&out.OutputCostUSD,
+		&out.CachedCostUSD,
+		&first,
+		&last,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("get lifetime cost: %w", err)
+	}
+	out.TotalCostUSD = out.InputCostUSD + out.OutputCostUSD + out.CachedCostUSD
+	if first.Valid {
+		s := first.Time.UTC().Format(time.RFC3339)
+		out.FirstRequest = &s
+	}
+	if last.Valid {
+		s := last.Time.UTC().Format(time.RFC3339)
+		out.LastRequest = &s
+	}
+	return out, nil
 }

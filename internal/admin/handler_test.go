@@ -45,8 +45,9 @@ type mockStore struct {
 	getRequestLog               func(ctx context.Context, id string) (*models.RequestLog, error)
 	updateProviderModelCosts    func(ctx context.Context, id string, m *models.ProviderModel) error
 	getProviderModelCosts       func(ctx context.Context, providerID, modelID string) (*models.ProviderModel, error)
-	getDashboardStats           func(ctx context.Context, since time.Time) (*models.DashboardStats, error)
+	getDashboardStats           func(ctx context.Context, since, until time.Time) (*models.DashboardStats, error)
 	getTimeSeries               func(ctx context.Context, since, until time.Time, granularity string) ([]models.TimeSeriesPoint, error)
+	getLifetimeCost             func(ctx context.Context) (*models.LifetimeCost, error)
 	updateProviderHealth        func(ctx context.Context, id string, healthy bool) error
 }
 
@@ -212,9 +213,9 @@ func (m *mockStore) GetProviderModelCosts(ctx context.Context, providerID, model
 	}
 	return nil, nil
 }
-func (m *mockStore) GetDashboardStats(ctx context.Context, since time.Time) (*models.DashboardStats, error) {
+func (m *mockStore) GetDashboardStats(ctx context.Context, since, until time.Time) (*models.DashboardStats, error) {
 	if m.getDashboardStats != nil {
-		return m.getDashboardStats(ctx, since)
+		return m.getDashboardStats(ctx, since, until)
 	}
 	return &models.DashboardStats{}, nil
 }
@@ -223,6 +224,12 @@ func (m *mockStore) GetTimeSeries(ctx context.Context, since, until time.Time, g
 		return m.getTimeSeries(ctx, since, until, granularity)
 	}
 	return []models.TimeSeriesPoint{}, nil
+}
+func (m *mockStore) GetLifetimeCost(ctx context.Context) (*models.LifetimeCost, error) {
+	if m.getLifetimeCost != nil {
+		return m.getLifetimeCost(ctx)
+	}
+	return &models.LifetimeCost{}, nil
 }
 func (m *mockStore) UpdateProviderHealth(ctx context.Context, id string, healthy bool) error {
 	if m.updateProviderHealth != nil {
@@ -782,6 +789,57 @@ func TestGetStats_DayShorthand(t *testing.T) {
 	rec := serve(h, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestGetStats_FromTo(t *testing.T) {
+	from := time.Now().UTC().Add(-48 * time.Hour).Format(time.RFC3339)
+	to := time.Now().UTC().Format(time.RFC3339)
+	called := false
+	h := testAdminHandlerWithStats(&mockStore{
+		getDashboardStats: func(_ context.Context, since, until time.Time) (*models.DashboardStats, error) {
+			called = true
+			if since.IsZero() || until.IsZero() {
+				t.Fatal("expected non-zero since/until")
+			}
+			return &models.DashboardStats{TotalRequests: 3, ByModel: []models.ModelStats{}, ByProvider: []models.ProviderStats{}}, nil
+		},
+	}, HandlerConfig{}, stats.NewAccumulator())
+
+	req := httptest.NewRequest(http.MethodGet, "/stats?from="+from+"&to="+to, nil)
+	rec := serve(h, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if !called {
+		t.Fatal("expected GetDashboardStats to be called for from/to window")
+	}
+
+	// Missing to
+	req = httptest.NewRequest(http.MethodGet, "/stats?from="+from, nil)
+	rec = serve(h, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for missing to, got %d", rec.Code)
+	}
+}
+
+func TestGetLifetimeCost(t *testing.T) {
+	h := testAdminHandlerWithStats(&mockStore{
+		getLifetimeCost: func(_ context.Context) (*models.LifetimeCost, error) {
+			return &models.LifetimeCost{TotalCostUSD: 1.25, TotalRequests: 10}, nil
+		},
+	}, HandlerConfig{}, stats.NewAccumulator())
+	req := httptest.NewRequest(http.MethodGet, "/stats/lifetime", nil)
+	rec := serve(h, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var body models.LifetimeCost
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body.TotalCostUSD != 1.25 || body.TotalRequests != 10 {
+		t.Fatalf("unexpected body: %+v", body)
 	}
 }
 

@@ -91,6 +91,7 @@ func (h *Handler) Routes() chi.Router {
 
 	r.Get("/stats", h.HandleGetStats)
 	r.Get("/stats/timeseries", h.HandleGetTimeSeries)
+	r.Get("/stats/lifetime", h.HandleGetLifetimeCost)
 
 	return r
 }

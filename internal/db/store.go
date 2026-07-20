@@ -156,12 +156,15 @@ type Store interface {
 
 	// --- Stats ---
 
-	// GetDashboardStats returns aggregated statistics since the given time.
-	GetDashboardStats(ctx context.Context, since time.Time) (*models.DashboardStats, error)
+	// GetDashboardStats returns aggregated statistics in [since, until].
+	GetDashboardStats(ctx context.Context, since, until time.Time) (*models.DashboardStats, error)
 
 	// GetTimeSeries returns request metrics bucketed by time.
 	// granularity must be "hour" or "day".
 	GetTimeSeries(ctx context.Context, since, until time.Time, granularity string) ([]models.TimeSeriesPoint, error)
+
+	// GetLifetimeCost returns all-time estimated spend from request logs.
+	GetLifetimeCost(ctx context.Context) (*models.LifetimeCost, error)
 
 	// --- Health ---
 

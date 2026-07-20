@@ -720,7 +720,8 @@ func TestDashboardStats(t *testing.T) {
 	}
 
 	since := now.Add(-10 * time.Minute)
-	stats, err := store.GetDashboardStats(ctx, since)
+	until := now.Add(time.Minute)
+	stats, err := store.GetDashboardStats(ctx, since, until)
 	if err != nil {
 		t.Fatalf("GetDashboardStats: %v", err)
 	}
@@ -751,7 +752,7 @@ func TestDashboardStats(t *testing.T) {
 
 	// Empty stats when since is in the future
 	future := now.Add(time.Hour)
-	empty, err := store.GetDashboardStats(ctx, future)
+	empty, err := store.GetDashboardStats(ctx, future, future.Add(time.Hour))
 	if err != nil {
 		t.Fatalf("GetDashboardStats empty: %v", err)
 	}
@@ -765,6 +766,76 @@ func TestDashboardStats(t *testing.T) {
 		t.Error("ByProvider should not be nil (must be empty slice)")
 	}
 }
+
+func TestLifetimeCost(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Second)
+
+	p := newProvider(uuid.NewString(), "Cost Provider", "https://cost.test", false, now)
+	if err := store.CreateProvider(ctx, p); err != nil {
+		t.Fatalf("CreateProvider: %v", err)
+	}
+	pm := &models.ProviderModel{
+		ID:         uuid.NewString(),
+		ProviderID: p.ID,
+		ModelID:    "gpt-4",
+		CreatedAt:  now,
+	}
+	if err := store.CreateProviderModel(ctx, pm); err != nil {
+		t.Fatalf("CreateProviderModel: %v", err)
+	}
+	costs := &models.ProviderModel{
+		CostPerMillionInput:     floatPtr(1.0),
+		CostPerMillionOutput:    floatPtr(2.0),
+		CostPerMillionCacheRead: floatPtr(0.5),
+	}
+	if err := store.UpdateProviderModelCosts(ctx, pm.ID, costs); err != nil {
+		t.Fatalf("UpdateProviderModelCosts: %v", err)
+	}
+
+	prompt, completion, cached := 1_000_000, 500_000, 100_000
+	l := &models.RequestLog{
+		ID:               uuid.NewString(),
+		Timestamp:        now.Add(-time.Hour),
+		ClientIP:         "127.0.0.1",
+		Method:           "POST",
+		Path:             "/v1/chat/completions",
+		RequestedModel:   "gpt-4",
+		ResolvedModel:    "gpt-4",
+		ProviderID:       p.ID,
+		ProviderName:     p.Name,
+		StatusCode:       200,
+		TotalTimeMs:      100,
+		PromptTokens:     &prompt,
+		CompletionTokens: &completion,
+		CachedTokens:     &cached,
+		TotalTokens:      intPtr(prompt + completion),
+		CreatedAt:        now,
+	}
+	if err := store.InsertRequestLog(ctx, l); err != nil {
+		t.Fatalf("InsertRequestLog: %v", err)
+	}
+
+	cost, err := store.GetLifetimeCost(ctx)
+	if err != nil {
+		t.Fatalf("GetLifetimeCost: %v", err)
+	}
+	if cost.TotalRequests != 1 {
+		t.Errorf("TotalRequests: got %d, want 1", cost.TotalRequests)
+	}
+	// input: (1e6 - 1e5) / 1e6 * 1 = 0.9; output: 0.5*2=1.0; cached: 0.1*0.5=0.05 → 1.95
+	want := 1.95
+	if cost.TotalCostUSD < want-0.001 || cost.TotalCostUSD > want+0.001 {
+		t.Errorf("TotalCostUSD: got %f, want ~%f", cost.TotalCostUSD, want)
+	}
+	if cost.FirstRequest == nil || cost.LastRequest == nil {
+		t.Fatal("expected first/last request timestamps")
+	}
+}
+
+func floatPtr(v float64) *float64 { return &v }
+func intPtr(v int) *int           { return &v }
 
 func TestNotFound(t *testing.T) {
 	store := newTestStore(t)
