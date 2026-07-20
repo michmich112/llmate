@@ -248,9 +248,11 @@ func (a *Accumulator) applyLog(b *bucketStats, log *models.RequestLog, costs pri
 	b.outputCostUSD += costs.OutputUSD
 	b.cachedCostUSD += costs.CachedReadUSD
 
-	modelName := log.RequestedModel
+	// Attribute usage to the concrete backend model, not a client-facing alias.
+	// Remapping an alias must not move historical spend/usage between models.
+	modelName := log.ResolvedModel
 	if modelName == "" {
-		modelName = log.ResolvedModel
+		modelName = log.RequestedModel
 	}
 	ms := b.byModel[modelName]
 	if ms == nil {

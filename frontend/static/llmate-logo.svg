@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="LLMate">
+  <defs>
+    <linearGradient id="llmate-bg" x1="8" y1="4" x2="56" y2="60" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#14B8A6"/>
+      <stop offset="1" stop-color="#0F766E"/>
+    </linearGradient>
+  </defs>
+  <rect width="64" height="64" rx="14" fill="url(#llmate-bg)"/>
+  <!-- Left stem -->
+  <rect x="17" y="15" width="8" height="34" rx="2" fill="#fff"/>
+  <!-- Right stem -->
+  <rect x="30" y="15" width="8" height="34" rx="2" fill="#fff"/>
+  <!-- Shared base -->
+  <rect x="17" y="41" width="30" height="8" rx="2" fill="#fff"/>
+  <!-- Routing node at right L joint -->
+  <circle cx="34" cy="45" r="5" fill="#0F766E"/>
+  <circle cx="34" cy="45" r="2.6" fill="#fff"/>
+</svg>

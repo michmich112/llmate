@@ -4,6 +4,7 @@ import type {
   ConfigDefinition,
   DashboardStats,
   DiscoveryResult,
+  LifetimeCost,
   LogFilter,
   ModelAlias,
   Provider,
@@ -11,9 +12,26 @@ import type {
   ProviderEndpoint,
   ProviderModel,
   RequestLog,
+  StatsWindow,
   StreamingLog,
   TimeSeriesPoint
 } from '$lib/types';
+
+function statsWindowParams(window?: string | StatsWindow): URLSearchParams {
+  const params = new URLSearchParams();
+  if (!window) return params;
+  if (typeof window === 'string') {
+    params.set('since', window);
+    return params;
+  }
+  if (window.from && window.to) {
+    params.set('from', window.from);
+    params.set('to', window.to);
+  } else if (window.since) {
+    params.set('since', window.since);
+  }
+  return params;
+}
 
 class ApiClient {
   private accessKey: string | null;
@@ -179,19 +197,26 @@ class ApiClient {
     return this.request<{ logs: RequestLog[]; total: number }>('GET', `/logs${qs}`);
   }
 
-  /** since: duration string e.g. 24h, 7d — passed as query param */
-  async getStats(since?: string): Promise<DashboardStats> {
-    const qs = since ? `?since=${encodeURIComponent(since)}` : '';
+  /** Window: relative since (24h, 7d) or absolute from/to RFC3339 */
+  async getStats(window?: string | StatsWindow): Promise<DashboardStats> {
+    const params = statsWindowParams(window);
+    const qs = params.toString() ? `?${params}` : '';
     return this.request<DashboardStats>('GET', `/stats${qs}`);
   }
 
-  /** Returns time-bucketed usage metrics. since e.g. "24h", granularity "hour"|"day" */
+  /** Returns time-bucketed usage metrics for a relative or absolute window. */
   async getTimeSeries(
-    since: string,
+    window: string | StatsWindow,
     granularity: 'hour' | 'day'
   ): Promise<{ points: TimeSeriesPoint[] }> {
-    const params = new URLSearchParams({ since, granularity });
+    const params = statsWindowParams(window);
+    params.set('granularity', granularity);
     return this.request<{ points: TimeSeriesPoint[] }>('GET', `/stats/timeseries?${params}`);
+  }
+
+  /** All-time estimated spend from request logs. */
+  async getLifetimeCost(): Promise<LifetimeCost> {
+    return this.request<LifetimeCost>('GET', '/stats/lifetime');
   }
 
   /** Returns a single request log including request/response bodies. */

@@ -1,6 +1,7 @@
 <script lang="ts">
   import { goto } from '$app/navigation';
   import { api } from '$lib/api/client';
+  import Logo from '$lib/components/Logo.svelte';
   import { Button } from '$lib/components/ui/button';
   import { Input } from '$lib/components/ui/input';
   import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '$lib/components/ui/card';
@@ -34,9 +35,12 @@
 
 <div class="flex min-h-screen items-center justify-center bg-background px-4">
   <Card class="w-full max-w-md">
-    <CardHeader class="space-y-1">
-      <CardTitle class="text-2xl font-bold">LLMate</CardTitle>
-      <CardDescription>LLM available to everyone. Enter your access key to continue.</CardDescription>
+    <CardHeader class="space-y-3">
+      <Logo size={40} withWordmark class="justify-center" />
+      <div class="space-y-1 text-center">
+        <CardTitle class="sr-only">LLMate</CardTitle>
+        <CardDescription>LLM available to everyone. Enter your access key to continue.</CardDescription>
+      </div>
     </CardHeader>
     <CardContent>
       <form onsubmit={handleLogin} class="space-y-4">

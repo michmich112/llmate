@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -45,8 +46,9 @@ type mockStore struct {
 	getRequestLog               func(ctx context.Context, id string) (*models.RequestLog, error)
 	updateProviderModelCosts    func(ctx context.Context, id string, m *models.ProviderModel) error
 	getProviderModelCosts       func(ctx context.Context, providerID, modelID string) (*models.ProviderModel, error)
-	getDashboardStats           func(ctx context.Context, since time.Time) (*models.DashboardStats, error)
+	getDashboardStats           func(ctx context.Context, since, until time.Time) (*models.DashboardStats, error)
 	getTimeSeries               func(ctx context.Context, since, until time.Time, granularity string) ([]models.TimeSeriesPoint, error)
+	getLifetimeCost             func(ctx context.Context) (*models.LifetimeCost, error)
 	updateProviderHealth        func(ctx context.Context, id string, healthy bool) error
 }
 
@@ -212,9 +214,9 @@ func (m *mockStore) GetProviderModelCosts(ctx context.Context, providerID, model
 	}
 	return nil, nil
 }
-func (m *mockStore) GetDashboardStats(ctx context.Context, since time.Time) (*models.DashboardStats, error) {
+func (m *mockStore) GetDashboardStats(ctx context.Context, since, until time.Time) (*models.DashboardStats, error) {
 	if m.getDashboardStats != nil {
-		return m.getDashboardStats(ctx, since)
+		return m.getDashboardStats(ctx, since, until)
 	}
 	return &models.DashboardStats{}, nil
 }
@@ -223,6 +225,12 @@ func (m *mockStore) GetTimeSeries(ctx context.Context, since, until time.Time, g
 		return m.getTimeSeries(ctx, since, until, granularity)
 	}
 	return []models.TimeSeriesPoint{}, nil
+}
+func (m *mockStore) GetLifetimeCost(ctx context.Context) (*models.LifetimeCost, error) {
+	if m.getLifetimeCost != nil {
+		return m.getLifetimeCost(ctx)
+	}
+	return &models.LifetimeCost{}, nil
 }
 func (m *mockStore) UpdateProviderHealth(ctx context.Context, id string, healthy bool) error {
 	if m.updateProviderHealth != nil {
@@ -782,6 +790,120 @@ func TestGetStats_DayShorthand(t *testing.T) {
 	rec := serve(h, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestGetStats_FromTo(t *testing.T) {
+	from := time.Now().UTC().Add(-48 * time.Hour).Format(time.RFC3339)
+	to := time.Now().UTC().Format(time.RFC3339)
+	called := false
+	h := testAdminHandlerWithStats(&mockStore{
+		getDashboardStats: func(_ context.Context, since, until time.Time) (*models.DashboardStats, error) {
+			called = true
+			if since.IsZero() || until.IsZero() {
+				t.Fatal("expected non-zero since/until")
+			}
+			return &models.DashboardStats{TotalRequests: 3, ByModel: []models.ModelStats{}, ByProvider: []models.ProviderStats{}}, nil
+		},
+	}, HandlerConfig{}, stats.NewAccumulator())
+
+	req := httptest.NewRequest(http.MethodGet, "/stats?from="+from+"&to="+to, nil)
+	rec := serve(h, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if !called {
+		t.Fatal("expected GetDashboardStats to be called for from/to window")
+	}
+
+	// Missing to
+	req = httptest.NewRequest(http.MethodGet, "/stats?from="+from, nil)
+	rec = serve(h, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for missing to, got %d", rec.Code)
+	}
+}
+
+func TestGetTimeSeries_FromTo(t *testing.T) {
+	from := time.Now().UTC().Add(-24 * time.Hour).Format(time.RFC3339Nano)
+	to := time.Now().UTC().Format(time.RFC3339Nano)
+	called := false
+	h := testAdminHandlerWithStats(&mockStore{
+		getTimeSeries: func(_ context.Context, since, until time.Time, granularity string) ([]models.TimeSeriesPoint, error) {
+			called = true
+			if granularity != "hour" {
+				t.Fatalf("granularity: got %q, want hour", granularity)
+			}
+			if until.Before(since) {
+				t.Fatal("until before since")
+			}
+			return []models.TimeSeriesPoint{{Bucket: "2026-01-01T00:00:00", Requests: 1}}, nil
+		},
+	}, HandlerConfig{}, stats.NewAccumulator())
+
+	req := httptest.NewRequest(http.MethodGet, "/stats/timeseries?from="+url.QueryEscape(from)+"&to="+url.QueryEscape(to)+"&granularity=hour", nil)
+	rec := serve(h, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if !called {
+		t.Fatal("expected GetTimeSeries to be called for from/to window")
+	}
+}
+
+func TestParseStatsWindow(t *testing.T) {
+	from := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	to := time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC)
+
+	cases := []struct {
+		name    string
+		q       url.Values
+		wantDB  bool
+		wantErr bool
+	}{
+		{"relative since", url.Values{"since": []string{"7d"}}, false, false},
+		{"absolute from/to", url.Values{"from": []string{from.Format(time.RFC3339)}, "to": []string{to.Format(time.RFC3339)}}, true, false},
+		{"nano timestamps", url.Values{"from": []string{from.Format(time.RFC3339Nano)}, "to": []string{to.Format(time.RFC3339Nano)}}, true, false},
+		{"missing to", url.Values{"from": []string{from.Format(time.RFC3339)}}, false, true},
+		{"from after to", url.Values{"from": []string{to.Format(time.RFC3339)}, "to": []string{from.Format(time.RFC3339)}}, false, true},
+		{"invalid from", url.Values{"from": []string{"not-a-date"}, "to": []string{to.Format(time.RFC3339)}}, false, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, _, useDB, err := parseStatsWindow(tc.q)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatal("expected error")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if useDB != tc.wantDB {
+				t.Fatalf("useDB: got %v, want %v", useDB, tc.wantDB)
+			}
+		})
+	}
+}
+
+func TestGetLifetimeCost(t *testing.T) {
+	h := testAdminHandlerWithStats(&mockStore{
+		getLifetimeCost: func(_ context.Context) (*models.LifetimeCost, error) {
+			return &models.LifetimeCost{TotalCostUSD: 1.25, TotalRequests: 10}, nil
+		},
+	}, HandlerConfig{}, stats.NewAccumulator())
+	req := httptest.NewRequest(http.MethodGet, "/stats/lifetime", nil)
+	rec := serve(h, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var body models.LifetimeCost
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body.TotalCostUSD != 1.25 || body.TotalRequests != 10 {
+		t.Fatalf("unexpected body: %+v", body)
 	}
 }
 

@@ -98,10 +98,13 @@ func (m *mockStore) UpdateProviderModelCosts(_ context.Context, _ string, _ *mod
 func (m *mockStore) GetProviderModelCosts(_ context.Context, _, _ string) (*models.ProviderModel, error) {
 	return nil, nil
 }
-func (m *mockStore) GetDashboardStats(_ context.Context, _ time.Time) (*models.DashboardStats, error) {
+func (m *mockStore) GetDashboardStats(_ context.Context, _, _ time.Time) (*models.DashboardStats, error) {
 	return nil, nil
 }
 func (m *mockStore) GetTimeSeries(_ context.Context, _, _ time.Time, _ string) ([]models.TimeSeriesPoint, error) {
+	return nil, nil
+}
+func (m *mockStore) GetLifetimeCost(_ context.Context) (*models.LifetimeCost, error) {
 	return nil, nil
 }
 func (m *mockStore) GetAllConfig(_ context.Context) (map[string]string, error) { return map[string]string{}, nil }

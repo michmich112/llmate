@@ -2,6 +2,7 @@
   import { goto } from '$app/navigation';
   import { page } from '$app/state';
   import { api } from '$lib/api/client';
+  import Logo from '$lib/components/Logo.svelte';
   import { cn } from '$lib/utils';
 
   const navItems = [
@@ -27,7 +28,13 @@
 
 <nav class="flex h-full flex-col px-3 py-4">
   <div class="mb-6 px-2">
-    <span class="text-lg font-semibold">LLMate</span>
+    <a
+      href="/"
+      aria-label="LLMate home"
+      class="inline-flex items-center gap-2 rounded-md outline-none focus-visible:ring-2 focus-visible:ring-ring"
+    >
+      <Logo size={28} withWordmark />
+    </a>
   </div>
 
   <ul class="flex-1 space-y-1">
@@ -48,7 +55,7 @@
     {/each}
   </ul>
 
-  <div class="mt-auto pt-4 border-t">
+  <div class="mt-auto border-t pt-4">
     <button
       onclick={handleLogout}
       class="flex w-full items-center rounded-md px-3 py-2 text-sm font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground"

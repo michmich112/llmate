@@ -151,10 +151,13 @@ func (s *mockStore) UpdateProviderModelCosts(_ context.Context, _ string, _ *mod
 func (s *mockStore) GetProviderModelCosts(_ context.Context, _, _ string) (*models.ProviderModel, error) {
 	return nil, nil
 }
-func (s *mockStore) GetDashboardStats(_ context.Context, _ time.Time) (*models.DashboardStats, error) {
+func (s *mockStore) GetDashboardStats(_ context.Context, _, _ time.Time) (*models.DashboardStats, error) {
 	return nil, nil
 }
 func (s *mockStore) GetTimeSeries(_ context.Context, _, _ time.Time, _ string) ([]models.TimeSeriesPoint, error) {
+	return nil, nil
+}
+func (s *mockStore) GetLifetimeCost(_ context.Context) (*models.LifetimeCost, error) {
 	return nil, nil
 }
 func (s *mockStore) GetAllConfig(_ context.Context) (map[string]string, error) { return map[string]string{}, nil }
@@ -321,6 +324,9 @@ func TestHandleShow(t *testing.T) {
 	if log.RequestedModel != "my-alias" {
 		t.Errorf("RequestedModel = %q, want my-alias", log.RequestedModel)
 	}
+	if log.ResolvedModel != "llama3:latest" {
+		t.Errorf("ResolvedModel = %q, want llama3:latest", log.ResolvedModel)
+	}
 	if log.Path != "/api/show" {
 		t.Errorf("Path = %q, want /api/show", log.Path)
 	}
@@ -370,6 +376,9 @@ func TestHandleChatCompletions_NonStreaming_AliasRewritesResponseModel(t *testin
 	log := metrics.last()
 	if log == nil {
 		t.Fatal("expected metrics.Record to be called")
+	}
+	if log.ResolvedModel != backendModel {
+		t.Errorf("ResolvedModel = %q, want %q", log.ResolvedModel, backendModel)
 	}
 	if !strings.Contains(log.ResponseBody, `"model":"fast"`) {
 		t.Errorf("logged ResponseBody should use client model name: %s", log.ResponseBody)

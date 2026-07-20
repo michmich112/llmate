@@ -103,10 +103,13 @@ func (s *routerTestStore) UpdateProviderModelCosts(_ context.Context, _ string, 
 func (s *routerTestStore) GetProviderModelCosts(_ context.Context, _, _ string) (*models.ProviderModel, error) {
 	return nil, nil
 }
-func (s *routerTestStore) GetDashboardStats(_ context.Context, _ time.Time) (*models.DashboardStats, error) {
+func (s *routerTestStore) GetDashboardStats(_ context.Context, _, _ time.Time) (*models.DashboardStats, error) {
 	return nil, nil
 }
 func (s *routerTestStore) GetTimeSeries(_ context.Context, _, _ time.Time, _ string) ([]models.TimeSeriesPoint, error) {
+	return nil, nil
+}
+func (s *routerTestStore) GetLifetimeCost(_ context.Context) (*models.LifetimeCost, error) {
 	return nil, nil
 }
 func (s *routerTestStore) GetAllConfig(_ context.Context) (map[string]string, error) { return map[string]string{}, nil }
