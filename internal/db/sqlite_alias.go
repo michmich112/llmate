@@ -49,8 +49,8 @@ func (s *SQLiteStore) ListAliases(ctx context.Context) ([]models.ModelAlias, err
 
 func (s *SQLiteStore) UpdateAlias(ctx context.Context, a *models.ModelAlias) error {
 	res, err := s.db.ExecContext(ctx,
-		`UPDATE model_aliases SET weight = ?, priority = ?, is_enabled = ?, updated_at = ? WHERE id = ?`,
-		a.Weight, a.Priority, a.IsEnabled, a.UpdatedAt, a.ID,
+		`UPDATE model_aliases SET alias = ?, provider_id = ?, model_id = ?, weight = ?, priority = ?, is_enabled = ?, updated_at = ? WHERE id = ?`,
+		a.Alias, a.ProviderID, a.ModelID, a.Weight, a.Priority, a.IsEnabled, a.UpdatedAt, a.ID,
 	)
 	if err != nil {
 		return fmt.Errorf("update alias: %w", err)

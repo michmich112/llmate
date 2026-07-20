@@ -403,7 +403,9 @@ func TestAliasesCRUD(t *testing.T) {
 		t.Errorf("aliases not ordered by priority DESC: [0].Priority=%d < [1].Priority=%d", list[0].Priority, list[1].Priority)
 	}
 
-	// Update a1
+	// Update a1 identity + routing fields
+	a1.Alias = "claude"
+	a1.ModelID = "claude-3"
 	a1.Weight = 5
 	a1.Priority = 20
 	a1.UpdatedAt = now.Add(time.Second)
@@ -423,8 +425,15 @@ func TestAliasesCRUD(t *testing.T) {
 	if len(listAfter) != 1 {
 		t.Fatalf("expected 1 alias after delete, got %d", len(listAfter))
 	}
-	if listAfter[0].Priority != 20 {
-		t.Errorf("expected updated priority 20, got %d", listAfter[0].Priority)
+	got := listAfter[0]
+	if got.Alias != "claude" {
+		t.Errorf("expected updated alias %q, got %q", "claude", got.Alias)
+	}
+	if got.ModelID != "claude-3" {
+		t.Errorf("expected updated model_id %q, got %q", "claude-3", got.ModelID)
+	}
+	if got.Priority != 20 {
+		t.Errorf("expected updated priority 20, got %d", got.Priority)
 	}
 }
 

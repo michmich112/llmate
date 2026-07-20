@@ -440,6 +440,67 @@ func TestCreateAlias_Valid(t *testing.T) {
 	}
 }
 
+func TestUpdateAlias_IdentityFields(t *testing.T) {
+	now := time.Now().UTC()
+	var updated *models.ModelAlias
+	store := &mockStore{
+		getProvider: func(_ context.Context, id string) (*models.Provider, error) {
+			if id == "p2" {
+				return &models.Provider{ID: id}, nil
+			}
+			return nil, sql.ErrNoRows
+		},
+		listAliases: func(_ context.Context) ([]models.ModelAlias, error) {
+			return []models.ModelAlias{{
+				ID: "a1", Alias: "gpt-4", ProviderID: "p1", ModelID: "llama3",
+				Weight: 1, Priority: 0, IsEnabled: true, CreatedAt: now, UpdatedAt: now,
+			}}, nil
+		},
+		updateAlias: func(_ context.Context, a *models.ModelAlias) error {
+			cp := *a
+			updated = &cp
+			return nil
+		},
+	}
+	h := testAdminHandler(store, HandlerConfig{})
+
+	body := `{"alias":"claude","provider_id":"p2","model_id":"claude-3","weight":3,"priority":10}`
+	req := httptest.NewRequest(http.MethodPut, "/aliases/a1", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := serve(h, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if updated == nil {
+		t.Fatal("expected UpdateAlias to be called")
+	}
+	if updated.Alias != "claude" {
+		t.Errorf("expected alias %q, got %q", "claude", updated.Alias)
+	}
+	if updated.ProviderID != "p2" {
+		t.Errorf("expected provider_id %q, got %q", "p2", updated.ProviderID)
+	}
+	if updated.ModelID != "claude-3" {
+		t.Errorf("expected model_id %q, got %q", "claude-3", updated.ModelID)
+	}
+	if updated.Weight != 3 || updated.Priority != 10 {
+		t.Errorf("expected weight=3 priority=10, got weight=%d priority=%d", updated.Weight, updated.Priority)
+	}
+
+	var resp map[string]json.RawMessage
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	var a models.ModelAlias
+	if err := json.Unmarshal(resp["alias"], &a); err != nil {
+		t.Fatalf("decode alias: %v", err)
+	}
+	if a.Alias != "claude" || a.ProviderID != "p2" || a.ModelID != "claude-3" {
+		t.Errorf("response alias mismatch: %+v", a)
+	}
+}
+
 func TestNotifyRoutingChanged_OnMutations(t *testing.T) {
 	now := time.Now().UTC()
 	enabled := true
@@ -492,7 +553,7 @@ func TestNotifyRoutingChanged_OnMutations(t *testing.T) {
 		{
 			name: "update alias",
 			run: func(h *Handler) *httptest.ResponseRecorder {
-				body := `{"weight":5}`
+				body := `{"alias":"claude","provider_id":"p1","model_id":"claude-3","weight":5}`
 				req := httptest.NewRequest(http.MethodPut, "/aliases/a1", strings.NewReader(body))
 				req.Header.Set("Content-Type", "application/json")
 				return serve(h, req)
