@@ -84,7 +84,7 @@ type Store interface {
 	// ListAliases returns all aliases ordered by alias name, then priority desc.
 	ListAliases(ctx context.Context) ([]models.ModelAlias, error)
 
-	// UpdateAlias updates weight, priority, is_enabled, updated_at. Identified by a.ID.
+	// UpdateAlias updates alias, provider_id, model_id, weight, priority, is_enabled, updated_at. Identified by a.ID.
 	UpdateAlias(ctx context.Context, a *models.ModelAlias) error
 
 	// DeleteAlias removes an alias by ID.

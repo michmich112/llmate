@@ -496,7 +496,7 @@ func (h *Handler) HandleCreateAlias(w http.ResponseWriter, r *http.Request) {
 	respondJSON(w, http.StatusCreated, map[string]interface{}{"alias": a})
 }
 
-// HandleUpdateAlias updates weight, priority, and/or is_enabled on an alias.
+// HandleUpdateAlias updates alias name, provider, model, weight, priority, and/or is_enabled.
 // Uses ListAliases + linear search to avoid adding a GetAlias store method (O(n), v1 acceptable).
 func (h *Handler) HandleUpdateAlias(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
@@ -506,9 +506,12 @@ func (h *Handler) HandleUpdateAlias(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var body struct {
-		Weight    *int  `json:"weight"`
-		Priority  *int  `json:"priority"`
-		IsEnabled *bool `json:"is_enabled"`
+		Alias      *string `json:"alias"`
+		ProviderID *string `json:"provider_id"`
+		ModelID    *string `json:"model_id"`
+		Weight     *int    `json:"weight"`
+		Priority   *int    `json:"priority"`
+		IsEnabled  *bool   `json:"is_enabled"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		respondError(w, http.StatusBadRequest, "invalid JSON body")
@@ -533,6 +536,38 @@ func (h *Handler) HandleUpdateAlias(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if body.Alias != nil {
+		alias := strings.TrimSpace(*body.Alias)
+		if alias == "" {
+			respondError(w, http.StatusBadRequest, "alias cannot be empty")
+			return
+		}
+		target.Alias = alias
+	}
+	if body.ProviderID != nil {
+		providerID := strings.TrimSpace(*body.ProviderID)
+		if providerID == "" {
+			respondError(w, http.StatusBadRequest, "provider_id cannot be empty")
+			return
+		}
+		if _, err := h.store.GetProvider(r.Context(), providerID); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				respondError(w, http.StatusBadRequest, "unknown provider")
+				return
+			}
+			respondError(w, http.StatusInternalServerError, "failed to verify provider")
+			return
+		}
+		target.ProviderID = providerID
+	}
+	if body.ModelID != nil {
+		modelID := strings.TrimSpace(*body.ModelID)
+		if modelID == "" {
+			respondError(w, http.StatusBadRequest, "model_id cannot be empty")
+			return
+		}
+		target.ModelID = modelID
+	}
 	if body.Weight != nil {
 		target.Weight = *body.Weight
 	}
