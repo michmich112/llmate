@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/llmate/gateway/internal/models"
+	"github.com/llmate/gateway/internal/proxy"
 	"github.com/llmate/gateway/internal/stats"
 )
 
@@ -285,6 +286,49 @@ func testAdminHandlerWithStats(store *mockStore, cfg HandlerConfig, acc *stats.A
 	qw := NewQueryWorker(store, 4)
 	qw.Start(context.Background())
 	return NewHandler(store, cfg, acc, qw)
+}
+
+func TestHandleActive(t *testing.T) {
+	store := &mockStore{}
+	acc := stats.NewAccumulator()
+	qw := NewQueryWorker(store, 4)
+	qw.Start(context.Background())
+	h := NewHandler(store, HandlerConfig{}, acc, qw)
+	reg := proxy.NewActiveRegistry()
+	h.SetActiveRegistry(reg)
+
+	req := httptest.NewRequest(http.MethodGet, "/admin/active", nil)
+	rec := httptest.NewRecorder()
+	h.HandleActive(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Active   int                  `json:"active"`
+		Requests []proxy.ActiveRequest `json:"requests"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.Active != 0 || len(resp.Requests) != 0 {
+		t.Errorf("expected 0 active requests, got %d (%d)", resp.Active, len(resp.Requests))
+	}
+
+	reg.Begin("gpt-4o", "/v1/chat/completions", "127.0.0.1")
+	rec = httptest.NewRecorder()
+	h.HandleActive(rec, req)
+	resp.Active = 0
+	resp.Requests = nil
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.Active != 1 || len(resp.Requests) != 1 {
+		t.Errorf("expected 1 active request, got %d (%d)", resp.Active, len(resp.Requests))
+	}
+	if resp.Requests[0].Model != "gpt-4o" || resp.Requests[0].Endpoint != "/v1/chat/completions" {
+		t.Errorf("unexpected request record: %+v", resp.Requests[0])
+	}
 }
 
 func TestCreateProvider_Valid(t *testing.T) {

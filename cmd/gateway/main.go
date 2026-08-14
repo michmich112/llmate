@@ -115,6 +115,10 @@ func main() {
 		OnRoutingChanged: reloadRouting,
 		OnConfigChanged:  reloadConfig,
 	}, statsAcc, queryWorker)
+	// Share a single in-flight registry between proxy tracking and admin reporting.
+	activeReg := proxy.NewActiveRegistry()
+	proxyHandler.SetActiveRegistry(activeReg)
+	adminHandler.SetActiveRegistry(activeReg)
 	onboardHandler := admin.NewOnboardHandler(store, httpClient, reloadRouting)
 	healthChecker := health.NewChecker(store, smartRouter, httpClient, cfg.HealthInterval, logger, reloadRouting)
 

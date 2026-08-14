@@ -1,16 +1,19 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { api } from '$lib/api/client';
-  import type { RequestLog, Provider, StreamingLog } from '$lib/types';
+  import type { RequestLog, Provider, StreamingLog, ActiveRequest } from '$lib/types';
   import { Button } from '$lib/components/ui/button';
   import { Input } from '$lib/components/ui/input';
-  import { Card, CardContent } from '$lib/components/ui/card';
+  import { Card, CardHeader, CardTitle, CardContent } from '$lib/components/ui/card';
 
   let logs = $state<RequestLog[]>([]);
   let total = $state(0);
   let loading = $state(false);
   let error = $state<string | null>(null);
   let providers = $state<Provider[]>([]);
+  let activeRequests = $state<ActiveRequest[]>([]);
+  let activeLoading = $state(false);
+  let activeError = $state<string | null>(null);
 
   let filter = $state({
     model: '',
@@ -27,13 +30,60 @@
   let hasNext = $derived(filter.offset + logs.length < total);
   let hasPrev = $derived(filter.offset > 0);
 
+  // Unify active + completed requests into display rows.
+  type Row = {
+    key: string;
+    kind: 'active' | 'log';
+    id: string;
+    timestamp: string;
+    model: string;
+    provider: string;
+    isActive: boolean;
+    isStreamed: boolean | null;
+    latencyMs: number | null;
+    ttftMs: number | null | undefined;
+    promptTokens: number | null | undefined;
+    completionTokens: number | null | undefined;
+    cachedTokens: number | null | undefined;
+    costUsd: number | undefined;
+    errorMessage: string | null | undefined;
+    log: RequestLog | null;
+    active: ActiveRequest | null;
+  };
+
+  function activeToRow(a: ActiveRequest): Row {
+    return {
+      key: 'active-' + a.id, kind: 'active', id: a.id, timestamp: a.started_at, model: a.model,
+      provider: '—', isActive: true, isStreamed: null, latencyMs: null, ttftMs: null,
+      promptTokens: null, completionTokens: null, cachedTokens: null, costUsd: undefined,
+      errorMessage: null, log: null, active: a
+    };
+  }
+
+  function logToRow(l: RequestLog): Row {
+    return {
+      key: 'log-' + l.id, kind: 'log', id: l.id, timestamp: l.timestamp ?? l.created_at,
+      model: l.resolved_model ?? l.requested_model ?? '—',
+      provider: l.provider_name ?? l.provider_id ?? '—',
+      isActive: false, isStreamed: l.is_streamed, latencyMs: l.total_time_ms, ttftMs: l.ttft_ms,
+      promptTokens: l.prompt_tokens, completionTokens: l.completion_tokens, cachedTokens: l.cached_tokens,
+      costUsd: l.estimated_cost_usd, errorMessage: l.error_message, log: l, active: null
+    };
+  }
+
+  let activeRows = $derived(activeRequests.map(activeToRow));
+  let logRows = $derived(logs.map(logToRow));
+  let rows = $derived(filter.status === 'active' ? activeRows : activeRows.concat(logRows));
+  let visibleCount = $derived(filter.status === 'active' ? activeRows.length : activeRows.length + logs.length);
+
   // Refresh handler
   function handleRefresh() {
     fetchLogs();
+    fetchActive();
   }
 
-  // Log detail dialog
-  let detailLog = $state<RequestLog | null>(null);
+  // Row detail dialog (works for both active and completed requests)
+  let detailRow = $state<Row | null>(null);
   let detailLoading = $state(false);
   let detailError = $state<string | null>(null);
   let showDetail = $state(false);
@@ -56,8 +106,22 @@
     filter.since = defaultSince();
     filter.until = defaultUntil();
     fetchLogs();
+    fetchActive();
     api.listProviders().then((p) => (providers = p)).catch(() => {});
   });
+
+  async function fetchActive() {
+    activeLoading = true;
+    activeError = null;
+    try {
+      const res = await api.getActive();
+      activeRequests = res.requests;
+    } catch (e) {
+      activeError = e instanceof Error ? e.message : 'Failed to load active requests';
+    } finally {
+      activeLoading = false;
+    }
+  }
 
   async function fetchLogs() {
     loading = true;
@@ -98,37 +162,40 @@
     fetchLogs();
   }
 
-  async function openDetail(log: RequestLog) {
+  async function openDetail(row: Row) {
     showDetail = true;
-    detailLog = log;
-    detailLoading = true;
+    detailRow = row;
+    detailLoading = false;
     detailError = null;
     streamingLogs = [];
     streamingLogsLoading = false;
     streamingLogsError = null;
-    try {
-      const result = await api.getLog(log.id);
-      detailLog = result.log;
-      if (result.log.is_streamed) {
-        streamingLogsLoading = true;
-        try {
-          streamingLogs = await api.getStreamingLogs(log.id);
-        } catch (e) {
-          streamingLogsError = e instanceof Error ? e.message : 'Failed to load streaming chunks';
-        } finally {
-          streamingLogsLoading = false;
+    if (row.kind === 'log' && row.log) {
+      detailLoading = true;
+      try {
+        const result = await api.getLog(row.log.id);
+        detailRow = logToRow(result.log);
+        if (result.log.is_streamed) {
+          streamingLogsLoading = true;
+          try {
+            streamingLogs = await api.getStreamingLogs(result.log.id);
+          } catch (e) {
+            streamingLogsError = e instanceof Error ? e.message : 'Failed to load streaming chunks';
+          } finally {
+            streamingLogsLoading = false;
+          }
         }
+      } catch (e) {
+        detailError = e instanceof Error ? e.message : 'Failed to load log detail';
+      } finally {
+        detailLoading = false;
       }
-    } catch (e) {
-      detailError = e instanceof Error ? e.message : 'Failed to load log detail';
-    } finally {
-      detailLoading = false;
     }
   }
 
   function closeDetail() {
     showDetail = false;
-    detailLog = null;
+    detailRow = null;
     detailError = null;
     streamingLogs = [];
     streamingLogsLoading = false;
@@ -257,18 +324,36 @@
     </p>
   {/if}
 
-  <!-- Table -->
+  <!-- Combined requests table -->
   <Card>
+    <CardHeader>
+      <CardTitle>
+        Requests
+        {#if filter.status === 'active' && activeRequests.length > 0}
+          <span class="ml-1 text-xs font-normal text-muted-foreground">
+            ({activeRequests.length} in-flight)
+          </span>
+        {/if}
+      </CardTitle>
+    </CardHeader>
     <CardContent class="p-0">
-      {#if loading}
-        <div class="space-y-1 p-4">
-          {#each [1, 2, 3, 4, 5] as _}
-            <div class="h-10 animate-pulse rounded bg-muted"></div>
-          {/each}
-        </div>
-      {:else if logs.length === 0}
-        <p class="px-6 py-12 text-center text-sm text-muted-foreground">No logs found for the selected filters.</p>
-      {:else}
+      {#if filter.status === 'active'}
+        {#if activeLoading}
+          <p class="px-6 py-12 text-center text-sm text-muted-foreground">Loading…</p>
+        {:else if activeError}
+          <div class="rounded-md border border-destructive/50 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+            {activeError}
+          </div>
+        {:else if activeRequests.length === 0}
+          <p class="px-6 py-12 text-center text-sm text-muted-foreground">No requests currently in flight.</p>
+        {/if}
+      {:else if loading}
+        <p class="px-6 py-12 text-center text-sm text-muted-foreground">Loading…</p>
+      {:else if rows.length === 0}
+        <p class="px-6 py-12 text-center text-sm text-muted-foreground">No requests found for the selected filters.</p>
+      {/if}
+
+      {#if rows.length > 0}
         <div class="overflow-x-auto">
           <table class="w-full text-sm">
             <thead>
@@ -281,67 +366,100 @@
                 <th class="px-4 py-3">Stream</th>
                 <th class="px-4 py-3 text-right">Latency</th>
                 <th class="px-4 py-3 text-right">TTFT</th>
-                <th class="px-4 py-3 text-right" title="Prompt tokens sent to the model">In</th>
-                <th class="px-4 py-3 text-right" title="Completion tokens returned by the model">Out</th>
-                <th class="px-4 py-3 text-right" title="Cached prompt tokens (subset of In)">Cached</th>
-                <th class="px-4 py-3 text-right" title="Estimated cost">Cost</th>
+                <th class="px-4 py-3 text-right">In</th>
+                <th class="px-4 py-3 text-right">Out</th>
+                <th class="px-4 py-3 text-right">Cached</th>
+                <th class="px-4 py-3 text-right">Cost</th>
                 <th class="px-4 py-3">Error</th>
               </tr>
             </thead>
             <tbody>
-              {#each logs as log}
-                <tr class="border-b last:border-0 hover:bg-muted/30">
-                  <td class="px-4 py-3">
-                    <button
-                      type="button"
-                      class="font-mono text-xs text-primary underline-offset-2 hover:underline"
-                      title="Click to inspect request/response"
-                      onclick={() => openDetail(log)}
-                    >
-                      {log.id.slice(0, 8)}
-                    </button>
-                  </td>
-                  <td class="whitespace-nowrap px-4 py-3 text-xs text-muted-foreground">
-                    {formatTs(log.timestamp ?? log.created_at)}
-                  </td>
+              {#each rows as row (row.key)}
+                <tr
+                  class="border-b last:border-0 cursor-pointer hover:bg-muted/30"
+                  onclick={() => openDetail(row)}
+                >
+                  <td class="whitespace-nowrap px-4 py-3">
+  <span class="font-mono text-xs underline decoration-primary underline-offset-4 text-primary">{row.id.slice(0, 8)}</span>
+</td>
+                  <td class="whitespace-nowrap px-4 py-3 text-xs">{formatTs(row.timestamp)}</td>
                   <td class="max-w-[160px] px-4 py-3">
-                    <span
-                      class="block truncate font-mono text-xs"
-                      title={log.resolved_model ?? log.requested_model}
-                    >
-                      {log.resolved_model ?? log.requested_model ?? '—'}
-                    </span>
+                    <span class="block truncate font-mono text-xs">{row.model}</span>
                   </td>
                   <td class="max-w-[120px] px-4 py-3">
-                    <span class="block truncate text-xs" title={log.provider_name ?? log.provider_id}>
-                      {log.provider_name ?? log.provider_id ?? '—'}
-                    </span>
+                    <span class="block truncate text-xs">{row.provider}</span>
                   </td>
                   <td class="px-4 py-3">
-                    <span class={statusClass(log.status_code)}>{log.status_code}</span>
+                    {#if row.isActive}
+                      <span
+                        class="inline-flex items-center rounded bg-yellow-500/15 px-2 py-0.5 text-xs font-medium text-yellow-700 dark:text-yellow-500"
+                      >
+                        Active
+                      </span>
+                    {:else if row.log?.status_code != null}
+                      <span class={statusClass(row.log.status_code)}>{row.log.status_code}</span>
+                    {:else}
+                      <span class="text-xs text-muted-foreground">—</span>
+                    {/if}
                   </td>
                   <td class="px-4 py-3 text-xs">
-                    {log.is_streamed ? 'Yes' : 'No'}
+                    {#if row.isActive}
+                      —
+                    {:else}
+                      {row.log?.is_streamed ? 'Yes' : 'No'}
+                    {/if}
                   </td>
-                  <td class="px-4 py-3 text-right text-xs">{log.total_time_ms}ms</td>
-                  <td class="px-4 py-3 text-right text-xs">{log.ttft_ms != null ? log.ttft_ms + 'ms' : '—'}</td>
-                  <td class="px-4 py-3 text-right text-xs tabular-nums">
-                    {log.prompt_tokens != null ? log.prompt_tokens.toLocaleString() : '—'}
+                  <td class="px-4 py-3 text-right text-xs">
+                    {#if row.isActive}
+                      —
+                    {:else if row.log?.total_time_ms != null}
+                      {row.log.total_time_ms}ms
+                    {:else}
+                      —
+                    {/if}
                   </td>
-                  <td class="px-4 py-3 text-right text-xs tabular-nums">
-                    {log.completion_tokens != null ? log.completion_tokens.toLocaleString() : '—'}
+                  <td class="px-4 py-3 text-right text-xs">
+                    {#if row.isActive}
+                      —
+                    {:else if row.log?.ttft_ms != null}
+                      {row.log.ttft_ms}ms
+                    {:else}
+                      —
+                    {/if}
                   </td>
-                  <td class="px-4 py-3 text-right text-xs tabular-nums text-muted-foreground">
-                    {log.cached_tokens != null && log.cached_tokens > 0 ? log.cached_tokens.toLocaleString() : '—'}
+                  <td class="px-4 py-3 text-right text-xs">
+                    {#if row.isActive}
+                      —
+                    {:else}
+                      {row.log?.prompt_tokens != null ? row.log.prompt_tokens.toLocaleString() : '—'}
+                    {/if}
                   </td>
-                  <td class="px-4 py-3 text-right text-xs tabular-nums text-muted-foreground">
-                    {formatCost(log.estimated_cost_usd)}
+                  <td class="px-4 py-3 text-right text-xs">
+                    {#if row.isActive}
+                      —
+                    {:else}
+                      {row.log?.completion_tokens != null ? row.log.completion_tokens.toLocaleString() : '—'}
+                    {/if}
+                  </td>
+                  <td class="px-4 py-3 text-right text-xs">
+                    {#if row.isActive}
+                      —
+                    {:else}
+                      {row.log?.cached_tokens != null && row.log.cached_tokens > 0 ? row.log.cached_tokens.toLocaleString() : '—'}
+                    {/if}
+                  </td>
+                  <td class="px-4 py-3 text-right text-xs">
+                    {#if row.isActive}
+                      —
+                    {:else}
+                      {formatCost(row.log?.estimated_cost_usd)}
+                    {/if}
                   </td>
                   <td class="max-w-[180px] px-4 py-3">
-                    {#if log.error_message}
-                      <span class="block truncate text-xs text-red-500" title={log.error_message}>
-                        {log.error_message}
-                      </span>
+                    {#if row.isActive}
+                      <span class="text-xs text-muted-foreground">In flight</span>
+                    {:else if row.log?.error_message}
+                      <span class="block truncate text-xs text-red-500">{row.log.error_message}</span>
                     {:else}
                       <span class="text-xs text-muted-foreground">—</span>
                     {/if}
@@ -354,7 +472,6 @@
       {/if}
     </CardContent>
   </Card>
-
   <!-- Pagination -->
   {#if total > filter.limit}
     <div class="flex items-center justify-between">
@@ -410,48 +527,78 @@
           <div class="rounded-md border border-destructive/50 bg-destructive/10 px-4 py-3 text-sm text-destructive">
             {detailError}
           </div>
-        {:else if detailLog}
+        {:else if detailRow && detailRow.kind === 'active' && detailRow.active}
+          <!-- Active request metadata -->
+          <div class="grid grid-cols-2 gap-x-6 gap-y-2 text-sm sm:grid-cols-3">
+            <div>
+              <span class="text-xs text-muted-foreground">Request ID</span>
+              <p class="font-mono text-xs">{detailRow.active.id}</p>
+            </div>
+            <div>
+              <span class="text-xs text-muted-foreground">Started</span>
+              <p class="text-xs">{formatTs(detailRow.active.started_at)}</p>
+            </div>
+            <div>
+              <span class="text-xs text-muted-foreground">Endpoint</span>
+              <p class="font-mono text-xs truncate" title={detailRow.active.endpoint}>{detailRow.active.endpoint}</p>
+            </div>
+            <div>
+              <span class="text-xs text-muted-foreground">Model</span>
+              <p class="font-mono text-xs truncate" title={detailRow.active.model}>{detailRow.active.model}</p>
+            </div>
+            {#if detailRow.active.remote}
+              <div>
+                <span class="text-xs text-muted-foreground">Remote</span>
+                <p class="text-xs">{detailRow.active.remote}</p>
+              </div>
+            {/if}
+          </div>
+          <div class="rounded-md border border-primary/30 bg-primary/10 px-4 py-3 text-xs text-muted-foreground">
+            This request is still in progress. Request and response bodies are captured once it finishes and
+            appears in the request log.
+          </div>
+        {:else if detailRow && detailRow.log}
           <!-- Metadata grid -->
           <div class="grid grid-cols-2 gap-x-6 gap-y-2 text-sm sm:grid-cols-3">
             <div>
               <span class="text-xs text-muted-foreground">Request ID</span>
-              <p class="font-mono text-xs">{detailLog.id}</p>
+              <p class="font-mono text-xs">{detailRow.log.id}</p>
             </div>
             <div>
               <span class="text-xs text-muted-foreground">Timestamp</span>
-              <p class="text-xs">{formatTs(detailLog.timestamp)}</p>
+              <p class="text-xs">{formatTs(detailRow.log.timestamp)}</p>
             </div>
             <div>
               <span class="text-xs text-muted-foreground">Status</span>
-              <p class={statusClass(detailLog.status_code) + ' text-xs'}>{detailLog.status_code}</p>
+              <p class={statusClass(detailRow.log.status_code) + ' text-xs'}>{detailRow.log.status_code}</p>
             </div>
             <div>
               <span class="text-xs text-muted-foreground">Model (Requested)</span>
-              <p class="font-mono text-xs truncate" title={detailLog.requested_model}>{detailLog.requested_model ?? '—'}</p>
+              <p class="font-mono text-xs truncate" title={detailRow.log.requested_model}>{detailRow.log.requested_model ?? '—'}</p>
             </div>
             <div>
               <span class="text-xs text-muted-foreground">Model (Resolved)</span>
-              <p class="font-mono text-xs truncate" title={detailLog.resolved_model}>{detailLog.resolved_model ?? '—'}</p>
+              <p class="font-mono text-xs truncate" title={detailRow.log.resolved_model}>{detailRow.log.resolved_model ?? '—'}</p>
             </div>
             <div>
               <span class="text-xs text-muted-foreground">Provider</span>
-              <p class="text-xs">{detailLog.provider_name ?? detailLog.provider_id ?? '—'}</p>
+              <p class="text-xs">{detailRow.log.provider_name ?? detailRow.log.provider_id ?? '—'}</p>
             </div>
             <div>
               <span class="text-xs text-muted-foreground">Latency</span>
-              <p class="text-xs">{detailLog.total_time_ms}ms{detailLog.ttft_ms != null ? ` (TTFT ${detailLog.ttft_ms}ms)` : ''}</p>
+              <p class="text-xs">{detailRow.log.total_time_ms}ms{detailRow.log.ttft_ms != null ? ` (TTFT ${detailRow.log.ttft_ms}ms)` : ''}</p>
             </div>
             <div>
               <span class="text-xs text-muted-foreground">Tokens</span>
               <p class="text-xs tabular-nums">
-                {detailLog.prompt_tokens != null ? detailLog.prompt_tokens.toLocaleString() : '—'} in
-                / {detailLog.completion_tokens != null ? detailLog.completion_tokens.toLocaleString() : '—'} out
-                {detailLog.cached_tokens && detailLog.cached_tokens > 0 ? `(${detailLog.cached_tokens.toLocaleString()} cached)` : ''}
+                {detailRow.log.prompt_tokens != null ? detailRow.log.prompt_tokens.toLocaleString() : '—'} in
+                / {detailRow.log.completion_tokens != null ? detailRow.log.completion_tokens.toLocaleString() : '—'} out
+                {detailRow.log.cached_tokens && detailRow.log.cached_tokens > 0 ? `(${detailRow.log.cached_tokens.toLocaleString()} cached)` : ''}
               </p>
             </div>
             <div>
               <span class="text-xs text-muted-foreground">Est. Cost</span>
-              <p class="text-xs tabular-nums">{formatCost(detailTotalCostUSD(detailLog))}</p>
+              <p class="text-xs tabular-nums">{formatCost(detailTotalCostUSD(detailRow.log))}</p>
             </div>
 
             <!-- Token breakdown table -->
@@ -467,41 +614,41 @@
                       <tr class="border-b">
                         <td class="py-2 pr-4 font-medium text-muted-foreground">Total tokens</td>
                         <td class="py-2 pl-4 text-right tabular-nums">
-                          {detailLog.total_tokens != null ? detailLog.total_tokens.toLocaleString() : '—'}
+                          {detailRow.log.total_tokens != null ? detailRow.log.total_tokens.toLocaleString() : '—'}
                         </td>
                         <td class="py-2 pr-4 font-medium text-muted-foreground text-right">Total cost</td>
                         <td class="py-2 pl-4 text-right tabular-nums">
-                          {formatCost(detailTotalCostUSD(detailLog))}
+                          {formatCost(detailTotalCostUSD(detailRow.log))}
                         </td>
                       </tr>
                       <tr class="border-b">
                         <td class="py-2 pr-4 font-medium text-muted-foreground">Input tokens</td>
                         <td class="py-2 pl-4 text-right tabular-nums">
-                          {detailLog.prompt_tokens != null ? detailLog.prompt_tokens.toLocaleString() : '—'}
+                          {detailRow.log.prompt_tokens != null ? detailRow.log.prompt_tokens.toLocaleString() : '—'}
                         </td>
                         <td class="py-2 pr-4 font-medium text-muted-foreground text-right">Input cost</td>
                         <td class="py-2 pl-4 text-right tabular-nums">
-                          {formatCost(detailLog.cost_breakdown?.input_usd)}
+                          {formatCost(detailRow.log.cost_breakdown?.input_usd)}
                         </td>
                       </tr>
                       <tr class="border-b">
                         <td class="py-2 pr-4 font-medium text-muted-foreground">Output tokens</td>
                         <td class="py-2 pl-4 text-right tabular-nums">
-                          {detailLog.completion_tokens != null ? detailLog.completion_tokens.toLocaleString() : '—'}
+                          {detailRow.log.completion_tokens != null ? detailRow.log.completion_tokens.toLocaleString() : '—'}
                         </td>
                         <td class="py-2 pr-4 font-medium text-muted-foreground text-right">Output cost</td>
                         <td class="py-2 pl-4 text-right tabular-nums">
-                          {formatCost(detailLog.cost_breakdown?.output_usd)}
+                          {formatCost(detailRow.log.cost_breakdown?.output_usd)}
                         </td>
                       </tr>
                       <tr>
                         <td class="py-2 pr-4 font-medium text-muted-foreground">Cached tokens</td>
                         <td class="py-2 pl-4 text-right tabular-nums">
-                          {detailLog.cached_tokens != null ? detailLog.cached_tokens.toLocaleString() : '—'}
+                          {detailRow.log.cached_tokens != null ? detailRow.log.cached_tokens.toLocaleString() : '—'}
                         </td>
                         <td class="py-2 pr-4 font-medium text-muted-foreground text-right">Cached cost</td>
                         <td class="py-2 pl-4 text-right tabular-nums">
-                          {formatCost(detailLog.cost_breakdown?.cached_read_usd)}
+                          {formatCost(detailRow.log.cost_breakdown?.cached_read_usd)}
                         </td>
                       </tr>
                     </tbody>
@@ -511,17 +658,17 @@
             </div>
           </div>
 
-          {#if detailLog.error_message}
+          {#if detailRow.log.error_message}
             <div class="rounded-md border border-destructive/50 bg-destructive/10 px-4 py-3 text-xs text-destructive">
-              <span class="font-medium">Error:</span> {detailLog.error_message}
+              <span class="font-medium">Error:</span> {detailRow.log.error_message}
             </div>
           {/if}
 
           <!-- Request body -->
           <div class="space-y-1">
             <h3 class="text-sm font-medium">Request Body</h3>
-            {#if detailLog.request_body}
-              <pre class="max-h-64 overflow-auto rounded-md bg-muted px-4 py-3 text-xs leading-relaxed">{prettyJSON(detailLog.request_body)}</pre>
+            {#if detailRow.log.request_body}
+              <pre class="max-h-64 overflow-auto rounded-md bg-muted px-4 py-3 text-xs leading-relaxed">{prettyJSON(detailRow.log.request_body)}</pre>
             {:else}
               <p class="text-xs text-muted-foreground">Not captured.</p>
             {/if}
@@ -531,17 +678,17 @@
           <div class="space-y-1">
             <h3 class="text-sm font-medium">
               Response Body
-              {#if detailLog.is_streamed && detailLog.response_body}
+              {#if detailRow.log.is_streamed && detailRow.log.response_body}
                 <span class="ml-1 text-xs font-normal text-muted-foreground">(reconstructed from stream)</span>
-              {:else if detailLog.is_streamed}
+              {:else if detailRow.log.is_streamed}
                 <span class="ml-1 text-xs font-normal text-muted-foreground">(streaming)</span>
               {/if}
             </h3>
-            {#if detailLog.response_body}
-              <pre class="max-h-64 overflow-auto rounded-md bg-muted px-4 py-3 text-xs leading-relaxed">{prettyJSON(detailLog.response_body)}</pre>
+            {#if detailRow.log.response_body}
+              <pre class="max-h-64 overflow-auto rounded-md bg-muted px-4 py-3 text-xs leading-relaxed">{prettyJSON(detailRow.log.response_body)}</pre>
             {:else}
               <p class="text-xs text-muted-foreground">
-                {detailLog.is_streamed
+                {detailRow.log.is_streamed
                   ? 'No text was reconstructed from this stream (empty deltas, non-OpenAI shape, or client disconnect). Adjust response body limits in Settings if you expect large streamed text.'
                   : 'Not captured.'}
               </p>
@@ -549,7 +696,7 @@
           </div>
 
           <!-- Streaming chunks section (visible only for streamed requests) -->
-          {#if detailLog.is_streamed}
+          {#if detailRow.log.is_streamed}
             <div class="space-y-1">
               <details class="group">
                 <summary class="cursor-pointer list-none text-sm font-medium hover:text-primary">

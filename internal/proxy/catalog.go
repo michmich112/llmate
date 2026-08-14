@@ -149,6 +149,21 @@ func (c *RoutingCatalog) PublicModelIDs() []string {
 	return out
 }
 
+// ProviderModelForModelID resolves a public model ID (either a direct provider
+// model ID or an enabled alias name) to its underlying ProviderModel, or nil if
+// the ID is not routable.
+func (c *RoutingCatalog) ProviderModelForModelID(modelID string) *models.ProviderModel {
+	s := c.snapshot()
+	cands := s.directModels[modelID]
+	if len(cands) == 0 {
+		cands = s.aliases[modelID]
+	}
+	if len(cands) == 0 {
+		return nil
+	}
+	return c.ProviderModel(cands[0].Provider.ID, cands[0].ModelID)
+}
+
 func (c *RoutingCatalog) ProviderModel(providerID, modelID string) *models.ProviderModel {
 	s := c.snapshot()
 	if byModel, ok := s.providerModels[providerID]; ok {

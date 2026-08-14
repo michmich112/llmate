@@ -12,8 +12,10 @@ import (
 // driver must be "sqlite" (or empty, which defaults to SQLite).
 func NewStore(driver, dsn string) (Store, error) {
 	switch driver {
-	case "sqlite", "":
+	case "sqlite":
 		return NewSQLiteStore(dsn)
+	case "libsql":
+		return NewLibSQLStore(dsn)
 	case "postgres":
 		return nil, fmt.Errorf("postgres driver not yet implemented")
 	default:

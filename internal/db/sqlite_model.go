@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -15,15 +14,16 @@ import (
 
 const providerModelCols = `id, provider_id, model_id, created_at, is_available,
 	cost_per_million_input, cost_per_million_output,
-	cost_per_million_cache_read, cost_per_million_cache_write`
+	cost_per_million_cache_read, cost_per_million_cache_write, max_context`
 
 func scanProviderModel(scan func(...any) error) (models.ProviderModel, error) {
 	var m models.ProviderModel
 	var costIn, costOut, costCacheRead, costCacheWrite sql.NullFloat64
+	var maxContext sql.NullInt64
 	var createdAt timeScanner
 	err := scan(
 		&m.ID, &m.ProviderID, &m.ModelID, &createdAt, &m.IsAvailable,
-		&costIn, &costOut, &costCacheRead, &costCacheWrite,
+		&costIn, &costOut, &costCacheRead, &costCacheWrite, &maxContext,
 	)
 	if err != nil {
 		return models.ProviderModel{}, err
@@ -40,6 +40,10 @@ func scanProviderModel(scan func(...any) error) (models.ProviderModel, error) {
 	}
 	if costCacheWrite.Valid {
 		m.CostPerMillionCacheWrite = &costCacheWrite.Float64
+	}
+	if maxContext.Valid {
+		v := int(maxContext.Int64)
+		m.MaxContext = &v
 	}
 	return m, nil
 }
@@ -75,13 +79,11 @@ func (s *SQLiteStore) SyncProviderModels(ctx context.Context, providerID string,
 
 func (s *SQLiteStore) CreateProviderModel(ctx context.Context, m *models.ProviderModel) error {
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO provider_models (id, provider_id, model_id, created_at, is_available) VALUES (?, ?, ?, ?, ?)`,
-		m.ID, m.ProviderID, m.ModelID, m.CreatedAt, m.IsAvailable,
+		`INSERT INTO provider_models (id, provider_id, model_id, created_at, is_available, max_context)
+		 VALUES (?, ?, ?, ?, ?, ?)`,
+		m.ID, m.ProviderID, m.ModelID, m.CreatedAt, m.IsAvailable, nullInt64(m.MaxContext),
 	)
 	if err != nil {
-		if strings.Contains(err.Error(), "UNIQUE constraint failed") {
-			return fmt.Errorf("create provider model: model %q already exists for provider: %w", m.ModelID, err)
-		}
 		return fmt.Errorf("create provider model: %w", err)
 	}
 	return nil
@@ -206,11 +208,12 @@ func (s *SQLiteStore) UpdateProviderModelCosts(ctx context.Context, id string, m
 	res, err := s.db.ExecContext(ctx,
 		`UPDATE provider_models
 		 SET cost_per_million_input = ?, cost_per_million_output = ?,
-		     cost_per_million_cache_read = ?, cost_per_million_cache_write = ?
+		     cost_per_million_cache_read = ?, cost_per_million_cache_write = ?,
+		     max_context = ?
 		 WHERE id = ?`,
 		nullFloat64(m.CostPerMillionInput), nullFloat64(m.CostPerMillionOutput),
 		nullFloat64(m.CostPerMillionCacheRead), nullFloat64(m.CostPerMillionCacheWrite),
-		id,
+		nullInt64(m.MaxContext), id,
 	)
 	if err != nil {
 		return fmt.Errorf("update provider model costs: %w", err)

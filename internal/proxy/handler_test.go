@@ -18,6 +18,8 @@ import (
 	"github.com/llmate/gateway/internal/models"
 )
 
+func ptrInt(v int) *int { return &v }
+
 func newTestHandler(router *mockRouter, metrics *mockMetrics) *Handler {
 	cat := NewRoutingCatalogFromData(&models.RoutingData{})
 	cfg := NewConfigSnapshot(&mockStore{})
@@ -264,6 +266,53 @@ func TestHandleChatCompletions_NonStreaming(t *testing.T) {
 	router.mu.Unlock()
 	if sc != 1 {
 		t.Errorf("ReportSuccess count = %d, want 1", sc)
+	}
+}
+
+func TestActiveTracking(t *testing.T) {
+	// Backend blocks until released so we can observe the in-flight registry.
+	started := make(chan struct{})
+	release := make(chan struct{})
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		close(started)
+		<-release
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(200)
+		fmt.Fprint(w, `{"id":"chatcmpl-1","choices":[{"message":{"role":"assistant","content":"Hello"}}]}`)
+	}))
+	defer backend.Close()
+
+	router := &mockRouter{
+		routeFn: func(_ context.Context, _ string, ep string) (*RouteResult, error) {
+			return fixedRoute(backend.URL, ep), nil
+		},
+	}
+	h := newTestHandler(router, &mockMetrics{})
+	reg := NewActiveRegistry()
+	h.SetActiveRegistry(reg)
+
+	body := `{"model":"gpt-4o","messages":[{"role":"user","content":"Hi"}]}`
+	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		h.HandleChatCompletions(httptest.NewRecorder(), req)
+	}()
+
+	<-started
+	if reg.Count() != 1 {
+		t.Fatalf("expected 1 in-flight request, got %d", reg.Count())
+	}
+	snapshot := reg.Snapshot()
+	if len(snapshot) != 1 || snapshot[0].Model != "gpt-4o" || snapshot[0].Endpoint != "/v1/chat/completions" {
+		t.Fatalf("unexpected active record: %+v", snapshot)
+	}
+
+	close(release)
+	<-done
+	if reg.Count() != 0 {
+		t.Fatalf("expected request deregistered after completion, got %d", reg.Count())
 	}
 }
 
@@ -723,7 +772,7 @@ func TestHandleListModels(t *testing.T) {
 	cat := NewRoutingCatalogFromData(&models.RoutingData{
 		Providers: []models.Provider{{ID: "p1", Name: "p1", IsHealthy: true}},
 		Models: []models.ProviderModel{
-			{ID: "pm1", ProviderID: "p1", ModelID: "gpt-4o", IsAvailable: true},
+			{ID: "pm1", ProviderID: "p1", ModelID: "gpt-4o", IsAvailable: true, MaxContext: ptrInt(128000)},
 			{ID: "pm2", ProviderID: "p1", ModelID: "gpt-3.5-turbo", IsAvailable: true},
 		},
 		Aliases: []models.ModelAlias{
@@ -766,6 +815,31 @@ func TestHandleListModels(t *testing.T) {
 	}
 	if len(resp.Data) != 3 {
 		t.Errorf("expected 3 entries, got %d: %v", len(resp.Data), resp.Data)
+	}
+
+	// gpt-4o and its alias "smart" resolve to the same underlying MaxContext.
+	for _, id := range []string{"gpt-4o", "smart"} {
+		var found *modelObject
+		for i := range resp.Data {
+			if resp.Data[i].ID == id {
+				found = &resp.Data[i]
+				break
+			}
+		}
+		if found == nil || found.Attr == nil {
+			t.Fatalf("expected attr on %q, got %+v", id, found)
+		}
+		if found.Attr.ContextWindow != 128000 || found.Attr.MaxTokens != 128000 ||
+			found.Attr.MaxPromptTokens != 128000 || found.Attr.MaxCompletionTokens != 128000 {
+			t.Errorf("%q attr = %+v, want all fields 128000", id, found.Attr)
+		}
+	}
+
+	// gpt-3.5-turbo has no MaxContext, so attr must be omitted.
+	for _, d := range resp.Data {
+		if d.ID == "gpt-3.5-turbo" && d.Attr != nil {
+			t.Errorf("expected attr omitted for gpt-3.5-turbo, got %+v", d.Attr)
+		}
 	}
 }
 
@@ -941,7 +1015,7 @@ func TestHandleAudioSpeech_BinaryPassthrough(t *testing.T) {
 func TestHandleGetModel(t *testing.T) {
 	cat := NewRoutingCatalogFromData(&models.RoutingData{
 		Providers: []models.Provider{{ID: "p1", Name: "p1", IsHealthy: true}},
-		Models: []models.ProviderModel{{ProviderID: "p1", ModelID: "gpt-4o", IsAvailable: true}},
+		Models: []models.ProviderModel{{ProviderID: "p1", ModelID: "gpt-4o", IsAvailable: true, MaxContext: ptrInt(128000)}},
 	})
 	h := NewHandler(&mockRouter{}, &mockMetrics{}, cat, NewConfigSnapshot(&mockStore{}), nil)
 
@@ -972,6 +1046,9 @@ func TestHandleGetModel(t *testing.T) {
 		}
 		if obj.OwnedBy != "llmate" {
 			t.Errorf("owned_by = %q, want llmate", obj.OwnedBy)
+		}
+		if obj.Attr == nil || obj.Attr.ContextWindow != 128000 {
+			t.Errorf("attr = %+v, want context_window 128000", obj.Attr)
 		}
 	})
 
