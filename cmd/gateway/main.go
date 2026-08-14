@@ -61,11 +61,12 @@ func main() {
 		"port", cfg.Port,
 		"db_driver", cfg.DBDriver,
 		"db", cfg.DBPath,
+		"legacy_db", cfg.LegacyDBPath,
 		"log_level", cfg.LogLevel,
 		"health_interval", cfg.HealthInterval,
 	)
 
-	store, err := db.NewStore(cfg.DBDriver, cfg.DBPath)
+	store, err := db.NewStore(cfg.DBDriver, cfg.DBPath, cfg.LegacyDBPath)
 	if err != nil {
 		logger.Error("failed to open database", "error", err)
 		os.Exit(1)

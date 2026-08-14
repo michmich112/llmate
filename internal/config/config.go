@@ -12,6 +12,7 @@ type Config struct {
 	Port           string
 	DBDriver       string
 	DBPath         string
+	LegacyDBPath   string
 	HealthInterval time.Duration
 	LogLevel       string
 	MaxBodySize    int64
@@ -27,8 +28,9 @@ func Load() (*Config, error) {
 	cfg := &Config{
 		AccessKey:      accessKey,
 		Port:           getEnvOrDefault("PORT", "8080"),
-		DBDriver:       getEnvOrDefault("DB_DRIVER", "sqlite"),
+		DBDriver:       getEnvOrDefault("DB_DRIVER", "libsql"),
 		DBPath:         getEnvOrDefault("DB_PATH", "./llmate.db"),
+		LegacyDBPath:   getEnvOrDefault("LEGACY_DB_PATH", "./llmate.db"),
 		HealthInterval: parseDurationOrDefault("HEALTH_INTERVAL", 30*time.Second),
 		LogLevel:       getEnvOrDefault("LOG_LEVEL", "info"),
 		MaxBodySize:    parseIntOrDefault("MAX_BODY_SIZE", 10*1024*1024),

@@ -28,7 +28,7 @@ type SQLiteStore struct {
 // NewSQLiteStore opens a SQLite database at dbPath, applies PRAGMAs, and runs migrations.
 // Use ":memory:" for an in-memory database (e.g. tests).
 func NewSQLiteStore(dbPath string) (*SQLiteStore, error) {
-	db, err := openDB("sqlite", dbPath)
+	db, err := openDB("sqlite", dbPath, "")
 	if err != nil {
 		return nil, err
 	}
@@ -40,8 +40,8 @@ func NewSQLiteStore(dbPath string) (*SQLiteStore, error) {
 // driver (modernc), so this works without cgo and shares the same schema and
 // migrations as the SQLite store. Point it at a remote libsql:// URL to talk to
 // a Turso/libSQL server.
-func NewLibSQLStore(dbPath string) (*SQLiteStore, error) {
-	db, err := openDB("libsql", dbPath)
+func NewLibSQLStore(dbPath, legacyPath string) (*SQLiteStore, error) {
+	db, err := openDB("libsql", dbPath, legacyPath)
 	if err != nil {
 		return nil, err
 	}
@@ -51,7 +51,7 @@ func NewLibSQLStore(dbPath string) (*SQLiteStore, error) {
 // openDB opens a database through the given driver and applies the shared
 // PRAGMAs and migrations. driver must be "sqlite" (modernc) or "libsql"
 // (Turso/libSQL client).
-func openDB(driver, dbPath string) (*sql.DB, error) {
+func openDB(driver, dbPath, legacyPath string) (*sql.DB, error) {
 	var dsn string
 	switch driver {
 	case "sqlite":
@@ -101,6 +101,15 @@ func openDB(driver, dbPath string) (*sql.DB, error) {
 		if _, err := db.Exec("PRAGMA journal_mode = WAL"); err != nil {
 			db.Close()
 			return nil, fmt.Errorf("set WAL journal mode: %w", err)
+		}
+	}
+
+	// For libsql/Turso, migrate an existing sqlite database into an empty target
+	// before applying schema migrations, so data is preserved on first boot.
+	if driver == "libsql" && legacyPath != "" {
+		if err := migrateLegacySQLite(db, legacyPath); err != nil {
+			db.Close()
+			return nil, err
 		}
 	}
 

@@ -131,7 +131,7 @@ RequestLog N──1 Provider
 |-----------|-----------|
 | Backend language | Go 1.22+ |
 | HTTP router | chi v5 |
-| Database | SQLite (via `modernc.org/sqlite` or `mattn/go-sqlite3`) |
+| Database | libSQL/Turso (default) or SQLite, via `modernc.org/sqlite` / Turso's `libsql` client. Legacy SQLite data is migrated into a new/empty Turso DB on first boot. |
 | Frontend framework | SvelteKit + Svelte 5 |
 | UI components | shadcn-svelte |
 | Styling | Tailwind CSS |
