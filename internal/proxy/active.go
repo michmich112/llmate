@@ -28,6 +28,23 @@ func NewActiveRegistry() *ActiveRegistry {
 	return &ActiveRegistry{active: make(map[string]ActiveRequest)}
 }
 
+// SetActiveRegistry replaces the registry pointer *p with r when r is non-nil.
+// Shared by the proxy and admin handlers so the nil-guard lives in one place.
+func SetActiveRegistry(p **ActiveRegistry, r *ActiveRegistry) {
+	if r == nil {
+		return
+	}
+	*p = r
+}
+
+// ActiveCount reports the in-flight request count of a registry, or 0 when nil.
+func ActiveCount(r *ActiveRegistry) int {
+	if r == nil {
+		return 0
+	}
+	return r.Count()
+}
+
 // Begin registers a new in-flight request and returns its tracking ID.
 func (r *ActiveRegistry) Begin(model, endpoint, remote string) string {
 	id := uuid.New().String()

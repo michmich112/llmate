@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/llmate/gateway/internal/models"
+	"github.com/llmate/gateway/internal/proxy"
 )
 
 func defaultGranularity(d time.Duration) string {
@@ -70,13 +71,6 @@ func parseStatsWindow(q url.Values) (since, until time.Time, useDB bool, err err
 	return now.Add(-d), now, false, nil
 }
 
-func activeCount(h *Handler) int {
-	if h.active == nil {
-		return 0
-	}
-	return h.active.Count()
-}
-
 func (h *Handler) HandleGetStats(w http.ResponseWriter, r *http.Request) {
 	since, until, useDB, err := parseStatsWindow(r.URL.Query())
 	if err != nil {
@@ -101,7 +95,7 @@ func (h *Handler) HandleGetStats(w http.ResponseWriter, r *http.Request) {
 		"error_rate":     stats.ErrorRate,
 		"by_model":       stats.ByModel,
 		"by_provider":    stats.ByProvider,
-		"active_requests": activeCount(h),
+		"active_requests": proxy.ActiveCount(h.active),
 	}
 	if !useDB && h.statsAcc.Backfilling() {
 		resp["backfilling"] = true

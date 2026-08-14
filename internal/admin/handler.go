@@ -41,10 +41,7 @@ type HandlerConfig struct {
 // NewHandler creates a new admin Handler backed by the given store.
 // SetActiveRegistry wires the shared in-flight request registry so admin can report it.
 func (h *Handler) SetActiveRegistry(r *proxy.ActiveRegistry) {
-	if r == nil {
-		return
-	}
-	h.active = r
+	proxy.SetActiveRegistry(&h.active, r)
 }
 
 func NewHandler(store db.Store, cfg HandlerConfig, statsAcc *stats.Accumulator, queryWorker *QueryWorker) *Handler {
@@ -158,7 +155,10 @@ func (h *Handler) HandleAuth(w http.ResponseWriter, r *http.Request) {
 // HandleActive returns the current in-flight proxy requests.
 func (h *Handler) HandleActive(w http.ResponseWriter, r *http.Request) {
 	if h.active == nil {
-		respondJSON(w, http.StatusOK, map[string]int{"active": 0})
+		respondJSON(w, http.StatusOK, map[string]interface{}{
+			"active":   0,
+			"requests": []proxy.ActiveRequest{},
+		})
 		return
 	}
 	respondJSON(w, http.StatusOK, map[string]interface{}{

@@ -83,18 +83,21 @@ func NewHandler(router Router, metrics MetricsCollector, catalog *RoutingCatalog
 // SetActiveRegistry replaces the in-flight registry. Shared across proxy and admin
 // so admin can report active requests.
 func (h *Handler) SetActiveRegistry(r *ActiveRegistry) {
-	if r == nil {
-		return
-	}
-	h.active = r
+	SetActiveRegistry(&h.active, r)
 }
 
 // ActiveCount reports the number of in-flight proxy requests.
 func (h *Handler) ActiveCount() int {
+	return ActiveCount(h.active)
+}
+
+// beginTracking registers an in-flight request and returns its tracking ID, or ""
+// when no registry is wired. Callers must pair it with a deferred h.active.End(id).
+func (h *Handler) beginTracking(r *http.Request, model, endpointPath string) string {
 	if h.active == nil {
-		return 0
+		return ""
 	}
-	return h.active.Count()
+	return h.active.Begin(model, endpointPath, clientIP(r))
 }
 
 // hopByHopHeaders lists headers that must not be forwarded upstream or downstream.
@@ -340,9 +343,8 @@ func applyUsageToLog(log *models.RequestLog, u *usageOnly) {
 // proxyNonStreaming executes a non-streaming proxy request with up to maxProxyAttempts failovers.
 // Failover occurs on 5xx responses and network/transport errors only.
 func (h *Handler) proxyNonStreaming(w http.ResponseWriter, r *http.Request, body []byte, model, endpointPath string, isBinary bool, startTime time.Time) {
-	trackID := ""
-	if h.active != nil {
-		trackID = h.active.Begin(model, endpointPath, clientIP(r))
+	trackID := h.beginTracking(r, model, endpointPath)
+	if trackID != "" {
 		defer h.active.End(trackID)
 	}
 	log := &models.RequestLog{
@@ -916,9 +918,8 @@ func (h *Handler) HandleGetModel(w http.ResponseWriter, r *http.Request) {
 // handleStreamingRequest handles streaming chat/completions with up to maxProxyAttempts
 // before the first byte is written to the client. Once streaming starts, no failover.
 func (h *Handler) handleStreamingRequest(w http.ResponseWriter, r *http.Request, body []byte, model, endpointPath string, startTime time.Time) {
-	trackID := ""
-	if h.active != nil {
-		trackID = h.active.Begin(model, endpointPath, clientIP(r))
+	trackID := h.beginTracking(r, model, endpointPath)
+	if trackID != "" {
 		defer h.active.End(trackID)
 	}
 	modifiedBody, err := injectStreamOptions(body)
