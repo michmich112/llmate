@@ -2,6 +2,7 @@ import type {
   ConfirmProviderBody,
   Configuration,
   ConfigDefinition,
+  ActiveRequest,
   DashboardStats,
   DiscoveryResult,
   LifetimeCost,
@@ -202,6 +203,11 @@ class ApiClient {
     const params = statsWindowParams(window);
     const qs = params.toString() ? `?${params}` : '';
     return this.request<DashboardStats>('GET', `/stats${qs}`);
+  }
+
+  /** Returns the current in-flight proxy requests. */
+  async getActive(): Promise<{ active: number; requests: ActiveRequest[] }> {
+    return this.request<{ active: number; requests: ActiveRequest[] }>('GET', '/active');
   }
 
   /** Returns time-bucketed usage metrics for a relative or absolute window. */

@@ -103,8 +103,17 @@ export interface DashboardStats {
   total_requests: number;
   avg_latency_ms: number;
   error_rate: number;
+  active_requests: number;
   by_model: ModelStats[];
   by_provider: ProviderStats[];
+}
+
+export interface ActiveRequest {
+  id: string;
+  model: string;
+  endpoint: string;
+  started_at: string;
+  remote?: string;
 }
 
 export interface LifetimeCost {

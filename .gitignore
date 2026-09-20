@@ -24,3 +24,5 @@ frontend/.svelte-kit/
 
 # Specs (local / agent-only; not versioned)
 /spec/
+# macOS
+.DS_Store

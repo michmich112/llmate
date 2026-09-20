@@ -75,7 +75,9 @@ All configuration is via environment variables:
 |----------|----------|---------|-------------|
 | `ACCESS_KEY` | **Yes** | — | Secret used for the admin UI and `/admin/*` API (`Authorization: Bearer …`). |
 | `PORT` | No | `8080` | HTTP listen port. |
-| `DB_PATH` | No | `./llmate.db` | SQLite database file path. Use a mounted volume in Docker (e.g. under `/app/data`). |
+| `DB_DRIVER` | No | `libsql` | Storage driver: `libsql` (Turso/local libSQL, the default) or `sqlite`. |
+| `DB_PATH` | No | `./llmate.db` | Database file path (or `libsql://` URL for Turso). Use a mounted volume in Docker (e.g. under `/app/data`). |
+| `LEGACY_DB_PATH` | No | `./llmate.db` | SQLite file to migrate into a new/empty Turso/libSQL database on first boot. Set to the previous `DB_PATH` when switching storage to avoid losing data. |
 | `HEALTH_INTERVAL` | No | `30s` | How often to run health checks against providers. |
 | `LOG_LEVEL` | No | `info` | `debug`, `info`, `warn`, or `error`. |
 | `MAX_BODY_SIZE` | No | `10485760` | Maximum request body size in bytes (default 10 MiB). |

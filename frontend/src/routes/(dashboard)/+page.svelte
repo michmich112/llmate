@@ -15,6 +15,7 @@
     total_requests: 0,
     avg_latency_ms: 0,
     error_rate: 0,
+    active_requests: 0,
     by_model: [],
     by_provider: []
   });
@@ -434,6 +435,7 @@
         </CardHeader>
         <CardContent>
           <p class="text-3xl font-bold">{stats.total_requests.toLocaleString()}</p>
+          <p class="mt-1 text-xs text-muted-foreground">{stats.active_requests} active right now</p>
         </CardContent>
       </Card>
 

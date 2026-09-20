@@ -61,11 +61,12 @@ func main() {
 		"port", cfg.Port,
 		"db_driver", cfg.DBDriver,
 		"db", cfg.DBPath,
+		"legacy_db", cfg.LegacyDBPath,
 		"log_level", cfg.LogLevel,
 		"health_interval", cfg.HealthInterval,
 	)
 
-	store, err := db.NewStore(cfg.DBDriver, cfg.DBPath)
+	store, err := db.NewStore(cfg.DBDriver, cfg.DBPath, cfg.LegacyDBPath)
 	if err != nil {
 		logger.Error("failed to open database", "error", err)
 		os.Exit(1)
@@ -115,6 +116,10 @@ func main() {
 		OnRoutingChanged: reloadRouting,
 		OnConfigChanged:  reloadConfig,
 	}, statsAcc, queryWorker)
+	// Share a single in-flight registry between proxy tracking and admin reporting.
+	activeReg := proxy.NewActiveRegistry()
+	proxyHandler.SetActiveRegistry(activeReg)
+	adminHandler.SetActiveRegistry(activeReg)
 	onboardHandler := admin.NewOnboardHandler(store, httpClient, reloadRouting)
 	healthChecker := health.NewChecker(store, smartRouter, httpClient, cfg.HealthInterval, logger, reloadRouting)
 

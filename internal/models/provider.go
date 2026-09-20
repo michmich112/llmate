@@ -62,4 +62,9 @@ type ProviderModel struct {
 	CostPerMillionOutput     *float64 `json:"cost_per_million_output,omitempty"`
 	CostPerMillionCacheRead  *float64 `json:"cost_per_million_cache_read,omitempty"`
 	CostPerMillionCacheWrite *float64 `json:"cost_per_million_cache_write,omitempty"`
+
+	// MaxContext is the maximum context window in tokens accepted for this model.
+	// Nil means not configured. Exposed in the OpenAI-compatible /v1/models/{model}
+	// response as attr.context_window / max_tokens / max_prompt_tokens / max_completion_tokens.
+	MaxContext *int `json:"max_context,omitempty"`
 }

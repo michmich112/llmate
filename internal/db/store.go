@@ -10,10 +10,12 @@ import (
 
 // NewStore opens a database connection using the specified driver and DSN.
 // driver must be "sqlite" (or empty, which defaults to SQLite).
-func NewStore(driver, dsn string) (Store, error) {
+func NewStore(driver, dsn, legacyPath string) (Store, error) {
 	switch driver {
-	case "sqlite", "":
+	case "sqlite":
 		return NewSQLiteStore(dsn)
+	case "libsql":
+		return NewLibSQLStore(dsn, legacyPath)
 	case "postgres":
 		return nil, fmt.Errorf("postgres driver not yet implemented")
 	default:

@@ -6,11 +6,13 @@ import (
 	"fmt"
 	"io/fs"
 	"log/slog"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
 
 	_ "modernc.org/sqlite"
+	_ "github.com/tursodatabase/libsql-client-go/libsql"
 
 	"github.com/llmate/gateway/internal/models"
 )
@@ -26,18 +28,59 @@ type SQLiteStore struct {
 // NewSQLiteStore opens a SQLite database at dbPath, applies PRAGMAs, and runs migrations.
 // Use ":memory:" for an in-memory database (e.g. tests).
 func NewSQLiteStore(dbPath string) (*SQLiteStore, error) {
-	// _time_format=sqlite instructs modernc.org/sqlite to store time.Time values
-	// in "2006-01-02 15:04:05.999999999-07:00" format, which SQLite's strftime()
-	// and datetime() functions can parse natively without any substr workarounds.
-	dsn := dbPath
-	if dbPath == ":memory:" {
-		dsn = "file::memory:?_time_format=sqlite"
-	} else {
-		dsn = "file:" + dbPath + "?_time_format=sqlite"
-	}
-	db, err := sql.Open("sqlite", dsn)
+	db, err := openDB("sqlite", dbPath, "")
 	if err != nil {
-		return nil, fmt.Errorf("open sqlite: %w", err)
+		return nil, err
+	}
+	return &SQLiteStore{db: db}, nil
+}
+
+// NewLibSQLStore opens a Turso/libSQL database through the "libsql" driver.
+// For local file URLs the libsql driver delegates to the registered sqlite
+// driver (modernc), so this works without cgo and shares the same schema and
+// migrations as the SQLite store. Point it at a remote libsql:// URL to talk to
+// a Turso/libSQL server.
+func NewLibSQLStore(dbPath, legacyPath string) (*SQLiteStore, error) {
+	db, err := openDB("libsql", dbPath, legacyPath)
+	if err != nil {
+		return nil, err
+	}
+	return &SQLiteStore{db: db}, nil
+}
+
+// openDB opens a database through the given driver and applies the shared
+// PRAGMAs and migrations. driver must be "sqlite" (modernc) or "libsql"
+// (Turso/libSQL client).
+func openDB(driver, dbPath, legacyPath string) (*sql.DB, error) {
+	var dsn string
+	switch driver {
+	case "sqlite":
+		// _time_format=sqlite instructs modernc.org/sqlite to store time.Time
+		// values in "2006-01-02 15:04:05.999999999-07:00" format, which SQLite's
+		// strftime() and datetime() functions can parse natively.
+		if dbPath == ":memory:" {
+			dsn = "file::memory:?_time_format=sqlite"
+		} else {
+			dsn = "file:" + dbPath + "?_time_format=sqlite"
+		}
+	case "libsql":
+		if dbPath == ":memory:" {
+			dsn = "file::memory:"
+		} else {
+			// libsql file:// URLs require an absolute path with a triple slash.
+			abs, err := filepath.Abs(dbPath)
+			if err != nil {
+				return nil, fmt.Errorf("resolve libsql path %q: %w", dbPath, err)
+			}
+			dsn = "file://" + abs
+		}
+	default:
+		return nil, fmt.Errorf("unsupported db driver %q", driver)
+	}
+
+	db, err := sql.Open(driver, dsn)
+	if err != nil {
+		return nil, fmt.Errorf("open %s database: %w", driver, err)
 	}
 
 	// WAL mode allows concurrent readers; cap connections to limit writer contention.
@@ -61,6 +104,15 @@ func NewSQLiteStore(dbPath string) (*SQLiteStore, error) {
 		}
 	}
 
+	// For libsql/Turso, migrate an existing sqlite database into an empty target
+	// before applying schema migrations, so data is preserved on first boot.
+	if driver == "libsql" && legacyPath != "" {
+		if err := migrateLegacySQLite(db, legacyPath); err != nil {
+			db.Close()
+			return nil, err
+		}
+	}
+
 	if err := runMigrationsWithLog(db, func(msg, name string) {
 		switch msg {
 		case "apply":
@@ -73,7 +125,7 @@ func NewSQLiteStore(dbPath string) (*SQLiteStore, error) {
 		return nil, err
 	}
 
-	return &SQLiteStore{db: db}, nil
+	return db, nil
 }
 
 // runMigrations applies any unapplied *.up.sql migration files in sorted order.
@@ -183,6 +235,14 @@ func nullInt(v *int) interface{} {
 
 // nullFloat64 converts *float64 to a SQL-compatible nullable value.
 func nullFloat64(v *float64) interface{} {
+	if v == nil {
+		return nil
+	}
+	return *v
+}
+
+// nullInt64 converts *int to a SQL-compatible value (nil becomes NULL).
+func nullInt64(v *int) interface{} {
 	if v == nil {
 		return nil
 	}

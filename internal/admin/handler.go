@@ -28,6 +28,7 @@ type Handler struct {
 	statsAcc         *stats.Accumulator
 	queryWorker      *QueryWorker
 	onRoutingChanged proxy.RoutingChangeNotifier
+	active           *proxy.ActiveRegistry
 }
 
 // HandlerConfig configures optional admin runtime hooks.
@@ -38,6 +39,11 @@ type HandlerConfig struct {
 }
 
 // NewHandler creates a new admin Handler backed by the given store.
+// SetActiveRegistry wires the shared in-flight request registry so admin can report it.
+func (h *Handler) SetActiveRegistry(r *proxy.ActiveRegistry) {
+	proxy.SetActiveRegistry(&h.active, r)
+}
+
 func NewHandler(store db.Store, cfg HandlerConfig, statsAcc *stats.Accumulator, queryWorker *QueryWorker) *Handler {
 	return &Handler{
 		store: store,
@@ -76,6 +82,8 @@ func (h *Handler) Routes() chi.Router {
 	r.Post("/aliases", h.HandleCreateAlias)
 	r.Put("/aliases/{id}", h.HandleUpdateAlias)
 	r.Delete("/aliases/{id}", h.HandleDeleteAlias)
+
+	r.Get("/active", h.HandleActive)
 
 	r.Get("/logs", h.HandleQueryLogs)
 	r.Get("/logs/{id}", h.HandleGetLog)
@@ -142,6 +150,21 @@ func parseDurationParam(s string) (time.Duration, error) {
 // ACCESS_KEY middleware has already authenticated the request.
 func (h *Handler) HandleAuth(w http.ResponseWriter, r *http.Request) {
 	respondJSON(w, http.StatusOK, map[string]bool{"valid": true})
+}
+
+// HandleActive returns the current in-flight proxy requests.
+func (h *Handler) HandleActive(w http.ResponseWriter, r *http.Request) {
+	if h.active == nil {
+		respondJSON(w, http.StatusOK, map[string]interface{}{
+			"active":   0,
+			"requests": []proxy.ActiveRequest{},
+		})
+		return
+	}
+	respondJSON(w, http.StatusOK, map[string]interface{}{
+		"active":   h.active.Count(),
+		"requests": h.active.Snapshot(),
+	})
 }
 
 // providerListItem wraps a Provider with the list of model IDs registered for it.
@@ -745,6 +768,7 @@ func (h *Handler) HandleUpdateProviderModel(w http.ResponseWriter, r *http.Reque
 		CostPerMillionOutput     *float64 `json:"cost_per_million_output"`
 		CostPerMillionCacheRead  *float64 `json:"cost_per_million_cache_read"`
 		CostPerMillionCacheWrite *float64 `json:"cost_per_million_cache_write"`
+		MaxContext               *int     `json:"max_context"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		respondError(w, http.StatusBadRequest, "invalid JSON body")
@@ -767,9 +791,10 @@ func (h *Handler) HandleUpdateProviderModel(w http.ResponseWriter, r *http.Reque
 		CostPerMillionOutput:     body.CostPerMillionOutput,
 		CostPerMillionCacheRead:  body.CostPerMillionCacheRead,
 		CostPerMillionCacheWrite: body.CostPerMillionCacheWrite,
+		MaxContext:               body.MaxContext,
 	}
 	hasCostUpdate := body.CostPerMillionInput != nil || body.CostPerMillionOutput != nil ||
-		body.CostPerMillionCacheRead != nil || body.CostPerMillionCacheWrite != nil
+		body.CostPerMillionCacheRead != nil || body.CostPerMillionCacheWrite != nil || body.MaxContext != nil
 	if hasCostUpdate {
 		if err := h.store.UpdateProviderModelCosts(r.Context(), modelRecordID, m); err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
@@ -816,7 +841,8 @@ func (h *Handler) HandleAddProviderModel(w http.ResponseWriter, r *http.Request)
 	}
 
 	var body struct {
-		ModelID string `json:"model_id"`
+		ModelID    string `json:"model_id"`
+		MaxContext *int   `json:"max_context"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		respondError(w, http.StatusBadRequest, "invalid JSON body")
@@ -836,13 +862,12 @@ func (h *Handler) HandleAddProviderModel(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	now := time.Now().UTC()
 	pm := &models.ProviderModel{
-		ID:          uuid.NewString(),
-		ProviderID:  providerID,
-		ModelID:     modelID,
-		CreatedAt:   now,
-		IsAvailable: false,
+		ID:         uuid.NewString(),
+		ProviderID: providerID,
+		ModelID:    modelID,
+		CreatedAt:  time.Now().UTC(),
+		MaxContext: body.MaxContext,
 	}
 	if err := h.store.CreateProviderModel(r.Context(), pm); err != nil {
 		respondError(w, http.StatusInternalServerError, "failed to add model")

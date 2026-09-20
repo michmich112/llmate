@@ -1,9 +1,15 @@
 .PHONY: dev dev-frontend dev-backend build build-frontend build-backend embed-and-compile test test-frontend ci run docker clean
 
+# Development — `make dev` runs backend + frontend together in one terminal.
+dev:
+	npx --yes concurrently -k -n backend,frontend -c blue,magenta \
+		"ACCESS_KEY=dev-key go run ./cmd/gateway/" \
+		"cd frontend && npm run dev"
+
 # Development — run each in a separate terminal.
 dev-backend:
 	ACCESS_KEY=dev-key go run ./cmd/gateway/
-
+	
 dev-frontend:
 	cd frontend && npm run dev
 

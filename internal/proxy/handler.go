@@ -64,6 +64,7 @@ type Handler struct {
 	catalog *RoutingCatalog
 	config  *ConfigSnapshot
 	client  *http.Client
+	active  *ActiveRegistry
 	logger  *slog.Logger
 }
 
@@ -75,8 +76,28 @@ func NewHandler(router Router, metrics MetricsCollector, catalog *RoutingCatalog
 	}
 	return &Handler{
 		router: router, metrics: metrics, catalog: catalog, config: config,
-		client: client, logger: slog.Default(),
+		client: client, active: NewActiveRegistry(), logger: slog.Default(),
 	}
+}
+
+// SetActiveRegistry replaces the in-flight registry. Shared across proxy and admin
+// so admin can report active requests.
+func (h *Handler) SetActiveRegistry(r *ActiveRegistry) {
+	SetActiveRegistry(&h.active, r)
+}
+
+// ActiveCount reports the number of in-flight proxy requests.
+func (h *Handler) ActiveCount() int {
+	return ActiveCount(h.active)
+}
+
+// beginTracking registers an in-flight request and returns its tracking ID, or ""
+// when no registry is wired. Callers must pair it with a deferred h.active.End(id).
+func (h *Handler) beginTracking(r *http.Request, model, endpointPath string) string {
+	if h.active == nil {
+		return ""
+	}
+	return h.active.Begin(model, endpointPath, clientIP(r))
 }
 
 // hopByHopHeaders lists headers that must not be forwarded upstream or downstream.
@@ -322,6 +343,10 @@ func applyUsageToLog(log *models.RequestLog, u *usageOnly) {
 // proxyNonStreaming executes a non-streaming proxy request with up to maxProxyAttempts failovers.
 // Failover occurs on 5xx responses and network/transport errors only.
 func (h *Handler) proxyNonStreaming(w http.ResponseWriter, r *http.Request, body []byte, model, endpointPath string, isBinary bool, startTime time.Time) {
+	trackID := h.beginTracking(r, model, endpointPath)
+	if trackID != "" {
+		defer h.active.End(trackID)
+	}
 	log := &models.RequestLog{
 		ID:             uuid.New().String(),
 		Timestamp:      startTime.UTC(),
@@ -821,12 +846,22 @@ func (h *Handler) HandleAudioTranscriptions(w http.ResponseWriter, r *http.Reque
 	respondError(w, 503, "all attempts exhausted")
 }
 
+// modelAttr carries the token-limit attributes for a model, mirroring the
+// OpenAI-compatible /v1/models/{model} attr shape.
+type modelAttr struct {
+	ContextWindow       int `json:"context_window"`
+	MaxTokens           int `json:"max_tokens"`
+	MaxPromptTokens     int `json:"max_prompt_tokens"`
+	MaxCompletionTokens int `json:"max_completion_tokens"`
+}
+
 // modelObject represents a single entry in the OpenAI-compatible /v1/models response.
 type modelObject struct {
-	ID      string `json:"id"`
-	Object  string `json:"object"`
-	Created int    `json:"created"`
-	OwnedBy string `json:"owned_by"`
+	ID      string     `json:"id"`
+	Object  string     `json:"object"`
+	Created int        `json:"created"`
+	OwnedBy string     `json:"owned_by"`
+	Attr    *modelAttr `json:"attr,omitempty"`
 }
 
 // listModelObjects builds a deduplicated, sorted list of model objects from the store.
@@ -835,7 +870,16 @@ func (h *Handler) listModelObjects() []modelObject {
 	ids := h.catalog.PublicModelIDs()
 	result := make([]modelObject, 0, len(ids))
 	for _, id := range ids {
-		result = append(result, modelObject{ID: id, Object: "model", Created: 0, OwnedBy: "llmate"})
+		obj := modelObject{ID: id, Object: "model", Created: 0, OwnedBy: "llmate"}
+		if pm := h.catalog.ProviderModelForModelID(id); pm != nil && pm.MaxContext != nil {
+			obj.Attr = &modelAttr{
+				ContextWindow:       *pm.MaxContext,
+				MaxTokens:           *pm.MaxContext,
+				MaxPromptTokens:     *pm.MaxContext,
+				MaxCompletionTokens: *pm.MaxContext,
+			}
+		}
+		result = append(result, obj)
 	}
 	return result
 }
@@ -874,6 +918,10 @@ func (h *Handler) HandleGetModel(w http.ResponseWriter, r *http.Request) {
 // handleStreamingRequest handles streaming chat/completions with up to maxProxyAttempts
 // before the first byte is written to the client. Once streaming starts, no failover.
 func (h *Handler) handleStreamingRequest(w http.ResponseWriter, r *http.Request, body []byte, model, endpointPath string, startTime time.Time) {
+	trackID := h.beginTracking(r, model, endpointPath)
+	if trackID != "" {
+		defer h.active.End(trackID)
+	}
 	modifiedBody, err := injectStreamOptions(body)
 	if err != nil {
 		respondError(w, 400, fmt.Sprintf("failed to inject stream options: %v", err))
