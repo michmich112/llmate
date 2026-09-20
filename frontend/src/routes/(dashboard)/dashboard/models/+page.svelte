@@ -106,6 +106,10 @@
     loadProviderModels(pid);
   }
 
+  function handleModelChange(e: Event) {
+    formModelId = (e.target as HTMLSelectElement).value;
+  }
+
   async function handleDialogSubmit() {
     if (!formAlias.trim()) {
       dialogError = 'Alias name is required';
@@ -305,7 +309,8 @@
           <label for="form-model" class="text-sm font-medium">Model ID <span class="text-destructive">*</span></label>
           <select
             id="form-model"
-            bind:value={formModelId}
+            value={formModelId}
+            onchange={handleModelChange}
             disabled={!formProviderId || modelsLoading}
             class="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:opacity-50"
           >

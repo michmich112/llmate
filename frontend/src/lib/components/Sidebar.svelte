@@ -8,7 +8,7 @@
   const navItems = [
     { label: 'Dashboard', path: '/' },
     { label: 'Providers', path: '/providers' },
-    { label: 'Models', path: '/models' },
+    { label: 'Models', path: '/dashboard/models' },
     { label: 'Logs', path: '/logs' },
     { label: 'Settings', path: '/settings' }
   ] as const;

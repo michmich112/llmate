@@ -114,13 +114,22 @@
                 </td>
                 <td class="px-4 py-3 text-muted-foreground">{formatDate(provider.health_checked_at)}</td>
                 <td class="px-4 py-3">
-                  <a
-                    href="/providers/{provider.id}"
-                    class="text-primary hover:underline"
-                    onclick={(e) => e.stopPropagation()}
-                  >
-                    View
-                  </a>
+                  <div class="flex gap-3">
+                    <a
+                      href="/providers/{provider.id}"
+                      class="text-primary hover:underline"
+                      onclick={(e) => e.stopPropagation()}
+                    >
+                      View
+                    </a>
+                    <a
+                      href="/providers/{provider.id}"
+                      class="text-primary hover:underline"
+                      onclick={(e) => e.stopPropagation()}
+                    >
+                      Edit
+                    </a>
+                  </div>
                 </td>
               </tr>
             {/each}
