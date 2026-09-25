@@ -32,6 +32,10 @@ type RequestLog struct {
 	ErrorMessage     string    `json:"error_message,omitempty"`
 	CreatedAt        time.Time `json:"created_at"`
 
+	// API key identity stamped onto the log at auth time (empty when unauthenticated).
+	APIKeyID   string `json:"api_key_id,omitempty"`
+	APIKeyName string `json:"api_key_name,omitempty"`
+
 	// Estimated cost computed asynchronously from model pricing at log time.
 	EstimatedCostUSD *float64 `json:"estimated_cost_usd,omitempty"`
 	// CostBreakdown is populated on admin detail fetch when pricing exists (see internal/pricing).

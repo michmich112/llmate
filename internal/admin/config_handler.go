@@ -303,6 +303,11 @@ func (h *ConfigHandler) HandleConfigDefinition(w http.ResponseWriter, r *http.Re
 			Max:         intPtr(models.MaxHTTPIdleConnTimeoutSeconds),
 			Description: "Outbound HTTP client: how long a keep-alive connection may sit idle in the pool before it is closed. Applies to gateway→provider traffic. Loaded at process start and when you save this value (new connections use the updated transport; active requests are not interrupted).",
 		},
+		"require_api_keys": {
+			Type:        "boolean",
+			Default:     false,
+			Description: "When on, every gateway request requires a valid API key. When off (default) and no API keys exist yet, the gateway stays open so existing deployments keep working; once any key exists, keys are required.",
+		},
 	}
 
 	respondJSON(w, http.StatusOK, definition)

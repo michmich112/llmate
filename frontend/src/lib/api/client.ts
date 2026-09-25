@@ -15,7 +15,11 @@ import type {
   RequestLog,
   StatsWindow,
   StreamingLog,
-  TimeSeriesPoint
+  TimeSeriesPoint,
+  APIKey,
+  APIKeyCreateInput,
+  APIKeyUpdateInput,
+  APIKeyUsage
 } from '$lib/types';
 
 function statsWindowParams(window?: string | StatsWindow): URLSearchParams {
@@ -289,6 +293,46 @@ class ApiClient {
       `/logs/${encodeURIComponent(requestLogId)}/streaming`
     );
     return data.streaming_logs;
+  }
+
+  async listAPIKeys(): Promise<APIKey[]> {
+    const data = await this.request<{ keys: APIKey[] }>('GET', '/keys');
+    return data.keys;
+  }
+
+  async createAPIKey(input: APIKeyCreateInput): Promise<{ api_key: APIKey; key: string }> {
+    const data = await this.request<{ api_key: APIKey; key: string }>('POST', '/keys', input);
+    return data;
+  }
+
+  async updateAPIKey(id: string, input: APIKeyUpdateInput): Promise<APIKey> {
+    const data = await this.request<{ api_key: APIKey }>('PUT', `/keys/${encodeURIComponent(id)}`, input);
+    return data.api_key;
+  }
+
+  async deleteAPIKey(id: string): Promise<void> {
+    await this.request<void>('DELETE', `/keys/${encodeURIComponent(id)}`);
+  }
+
+  async getUsage(): Promise<APIKeyUsage[]> {
+    const data = await this.request<{ usage: APIKeyUsage[] }>('GET', '/usage');
+    return data.usage;
+  }
+
+  /** Usage for the API key that authenticates this call (My Usage page). */
+  async getMyUsage(apiKey: string): Promise<{ usage: APIKeyUsage; api_key: string }> {
+    const res = await fetch(`/admin/me/usage`, {
+      method: 'GET',
+      headers: { Authorization: `Bearer ${apiKey}` }
+    });
+    if (res.status === 401) {
+      throw new Error('Unauthorized');
+    }
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      throw new Error((data as { error?: string }).error ?? `Request failed: ${res.status}`);
+    }
+    return data as { usage: APIKeyUsage; api_key: string };
   }
 }
 

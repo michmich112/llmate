@@ -245,3 +245,36 @@ export interface StreamingLog {
   /** Running total of content_delta after this chunk (computed by the API). */
   cumulative_body: string;
 }
+
+export interface APIKey {
+  id: string;
+  key_hash: string;
+  name: string;
+  is_active: boolean;
+  rate_limit_rpm?: number;
+  rate_limit_tpm?: number;
+  created_at: string;
+  last_used_at?: string;
+}
+
+export interface APIKeyCreateInput {
+  name: string;
+  rate_limit_rpm?: number;
+  rate_limit_tpm?: number;
+}
+
+export interface APIKeyUpdateInput {
+  name?: string;
+  is_active?: boolean;
+  rate_limit_rpm?: number;
+  rate_limit_tpm?: number;
+}
+
+export interface APIKeyUsage {
+  api_key_id: string;
+  api_key_name: string;
+  request_count: number;
+  total_tokens: number;
+  total_cost_usd: number;
+  last_used_at?: string;
+}

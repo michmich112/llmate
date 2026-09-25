@@ -51,6 +51,13 @@ type mockStore struct {
 	getTimeSeries               func(ctx context.Context, since, until time.Time, granularity string) ([]models.TimeSeriesPoint, error)
 	getLifetimeCost             func(ctx context.Context) (*models.LifetimeCost, error)
 	updateProviderHealth        func(ctx context.Context, id string, healthy bool) error
+	createAPIKey                func(ctx context.Context, k *models.APIKey) error
+	getAPIKeyByHash             func(ctx context.Context, keyHash string) (*models.APIKey, error)
+	getAPIKey                   func(ctx context.Context, id string) (*models.APIKey, error)
+	listAPIKeys                 func(ctx context.Context) ([]models.APIKey, error)
+	updateAPIKey                func(ctx context.Context, k *models.APIKey) error
+	deleteAPIKey                func(ctx context.Context, id string) error
+	usageByAPIKey               func(ctx context.Context, since, until time.Time) ([]models.APIKeyUsage, error)
 }
 
 func (m *mockStore) CreateProvider(ctx context.Context, p *models.Provider) error {
@@ -261,6 +268,54 @@ func (m *mockStore) PurgeRequestLogResponseBodiesOlderThan(_ context.Context, _ 
 	return 0, nil
 }
 func (m *mockStore) LoadRoutingData(_ context.Context) (*models.RoutingData, error) { return &models.RoutingData{}, nil }
+func (m *mockStore) CreateAPIKey(ctx context.Context, k *models.APIKey) error {
+	if m.createAPIKey != nil {
+		return m.createAPIKey(ctx, k)
+	}
+	return nil
+}
+func (m *mockStore) GetAPIKeyByHash(ctx context.Context, keyHash string) (*models.APIKey, error) {
+	if m.getAPIKeyByHash != nil {
+		return m.getAPIKeyByHash(ctx, keyHash)
+	}
+	return nil, nil
+}
+func (m *mockStore) GetAPIKey(ctx context.Context, id string) (*models.APIKey, error) {
+	if m.getAPIKey != nil {
+		return m.getAPIKey(ctx, id)
+	}
+	return nil, nil
+}
+func (m *mockStore) ListAPIKeys(ctx context.Context) ([]models.APIKey, error) {
+	if m.listAPIKeys != nil {
+		return m.listAPIKeys(ctx)
+	}
+	return nil, nil
+}
+func (m *mockStore) UpdateAPIKey(ctx context.Context, k *models.APIKey) error {
+	if m.updateAPIKey != nil {
+		return m.updateAPIKey(ctx, k)
+	}
+	return nil
+}
+func (m *mockStore) DeleteAPIKey(ctx context.Context, id string) error {
+	if m.deleteAPIKey != nil {
+		return m.deleteAPIKey(ctx, id)
+	}
+	return nil
+}
+func (m *mockStore) TouchAPIKeyLastUsed(_ context.Context, _ string, _ time.Time) error {
+	return nil
+}
+func (m *mockStore) QueryLogsByAPIKey(_ context.Context, _ string, _ models.LogFilter) ([]models.RequestLog, int, error) {
+	return nil, 0, nil
+}
+func (m *mockStore) UsageByAPIKey(ctx context.Context, since, until time.Time) ([]models.APIKeyUsage, error) {
+	if m.usageByAPIKey != nil {
+		return m.usageByAPIKey(ctx, since, until)
+	}
+	return nil, nil
+}
 func (m *mockStore) Close() error { return nil }
 
 // serve is a helper that routes a test request through the handler's chi router.
@@ -982,5 +1037,172 @@ func TestParseDurationParam(t *testing.T) {
 				t.Errorf("parseDurationParam(%q): want %v, got %v", tc.input, tc.wantDur, d)
 			}
 		}
+	}
+}
+
+func TestHandleListAPIKeys(t *testing.T) {
+	store := &mockStore{}
+	store.listAPIKeys = func(ctx context.Context) ([]models.APIKey, error) {
+		return []models.APIKey{
+			{ID: "k1", Name: "key one", IsActive: true, CreatedAt: time.Now().UTC()},
+			{ID: "k2", Name: "key two", IsActive: false, CreatedAt: time.Now().UTC()},
+		}, nil
+	}
+	h := testAdminHandler(store, HandlerConfig{})
+
+	req := httptest.NewRequest(http.MethodGet, "/keys", nil)
+	rec := serve(h, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Keys []models.APIKey `json:"keys"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(resp.Keys) != 2 || resp.Keys[0].Name != "key one" {
+		t.Fatalf("unexpected keys: %+v", resp.Keys)
+	}
+}
+
+func TestHandleCreateAPIKey(t *testing.T) {
+	store := &mockStore{}
+	store.createAPIKey = func(ctx context.Context, k *models.APIKey) error {
+		return nil
+	}
+	h := testAdminHandler(store, HandlerConfig{})
+
+	body := `{"name":"my key","rate_limit_rpm":10}`
+	req := httptest.NewRequest(http.MethodPost, "/keys", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := serve(h, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		APIKey models.APIKey `json:"api_key"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.APIKey.Name != "my key" || resp.APIKey.KeyHash != "" {
+		t.Fatalf("unexpected api key: %+v", resp.APIKey)
+	}
+}
+
+func TestHandleCreateAPIKey_MissingName(t *testing.T) {
+	h := testAdminHandler(&mockStore{}, HandlerConfig{})
+
+	body := `{"name":""}`
+	req := httptest.NewRequest(http.MethodPost, "/keys", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := serve(h, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandleUpdateAPIKey(t *testing.T) {
+	store := &mockStore{}
+	store.getAPIKey = func(ctx context.Context, id string) (*models.APIKey, error) {
+		return &models.APIKey{ID: id, Name: "old", IsActive: true}, nil
+	}
+	store.updateAPIKey = func(ctx context.Context, k *models.APIKey) error {
+		return nil
+	}
+	h := testAdminHandler(store, HandlerConfig{})
+
+	body := `{"name":"renamed","is_active":false}`
+	req := httptest.NewRequest(http.MethodPut, "/keys/k1", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := serve(h, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandleDeleteAPIKey(t *testing.T) {
+	store := &mockStore{}
+	store.deleteAPIKey = func(ctx context.Context, id string) error {
+		return nil
+	}
+	h := testAdminHandler(store, HandlerConfig{})
+
+	req := httptest.NewRequest(http.MethodDelete, "/keys/k1", nil)
+	rec := serve(h, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("expected 204, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandleUsageByKey(t *testing.T) {
+	store := &mockStore{}
+	store.usageByAPIKey = func(ctx context.Context, since, until time.Time) ([]models.APIKeyUsage, error) {
+		return []models.APIKeyUsage{
+			{APIKeyID: "k1", APIKeyName: "key one", RequestCount: 5, TotalTokens: 100, TotalCostUSD: 1.0},
+		}, nil
+	}
+	h := testAdminHandler(store, HandlerConfig{})
+
+	req := httptest.NewRequest(http.MethodGet, "/usage?since=2026-01-01T00:00:00Z", nil)
+	rec := serve(h, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandleMyUsage_Unauthorized(t *testing.T) {
+	store := &mockStore{}
+	store.getAPIKeyByHash = func(ctx context.Context, keyHash string) (*models.APIKey, error) {
+		return nil, nil
+	}
+	h := testAdminHandler(store, HandlerConfig{})
+
+	req := httptest.NewRequest(http.MethodGet, "/me/usage", nil)
+	rec := serve(h, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandleMyUsage_OK(t *testing.T) {
+	store := &mockStore{}
+	store.getAPIKeyByHash = func(ctx context.Context, keyHash string) (*models.APIKey, error) {
+		if keyHash == "" {
+			return nil, nil
+		}
+		return &models.APIKey{ID: "k1", Name: "my key", IsActive: true}, nil
+	}
+	store.usageByAPIKey = func(ctx context.Context, since, until time.Time) ([]models.APIKeyUsage, error) {
+		return []models.APIKeyUsage{
+			{APIKeyID: "k1", APIKeyName: "my key", RequestCount: 5, TotalTokens: 100, TotalCostUSD: 1.0},
+			{APIKeyID: "k2", APIKeyName: "other", RequestCount: 9, TotalTokens: 200, TotalCostUSD: 2.0},
+		}, nil
+	}
+	h := testAdminHandler(store, HandlerConfig{})
+
+	req := httptest.NewRequest(http.MethodGet, "/me/usage?since=2026-01-01T00:00:00Z", nil)
+	req.Header.Set("Authorization", "Bearer testtoken")
+	rec := serve(h, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Usage models.APIKeyUsage `json:"usage"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.Usage.APIKeyID != "k1" || resp.Usage.RequestCount != 5 {
+		t.Fatalf("unexpected usage: %+v", resp.Usage)
 	}
 }

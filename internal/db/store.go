@@ -121,6 +121,37 @@ type Store interface {
 	// GetRequestLog returns a single request log by ID including request/response bodies.
 	GetRequestLog(ctx context.Context, id string) (*models.RequestLog, error)
 
+	// --- API Keys ---
+
+	// CreateAPIKey inserts a new API key. The caller must set ID and timestamps, and must
+	// set KeyHash to the sha256 of the raw key. Returns the stored key (KeyHash excluded).
+	CreateAPIKey(ctx context.Context, k *models.APIKey) error
+
+	// GetAPIKeyByHash returns the API key whose sha256 hash matches keyHash, or nil if not found.
+	GetAPIKeyByHash(ctx context.Context, keyHash string) (*models.APIKey, error)
+
+	// GetAPIKey returns the API key with the given ID, or sql.ErrNoRows if not found.
+	GetAPIKey(ctx context.Context, id string) (*models.APIKey, error)
+
+	// ListAPIKeys returns all API keys ordered by created_at desc.
+	ListAPIKeys(ctx context.Context) ([]models.APIKey, error)
+
+	// UpdateAPIKey updates the mutable fields of a key (name, is_active, rate limits). Identified by k.ID.
+	UpdateAPIKey(ctx context.Context, k *models.APIKey) error
+
+	// DeleteAPIKey removes an API key by ID.
+	DeleteAPIKey(ctx context.Context, id string) error
+
+	// TouchAPIKeyLastUsed records the last_used_at timestamp for a key.
+	TouchAPIKeyLastUsed(ctx context.Context, id string, at time.Time) error
+
+	// QueryLogsByAPIKey returns request logs stamped with the given API key, and total count.
+	// Results are ordered by timestamp desc.
+	QueryLogsByAPIKey(ctx context.Context, apiKeyID string, filter models.LogFilter) ([]models.RequestLog, int, error)
+
+	// UsageByAPIKey returns per-key usage summaries from request logs.
+	UsageByAPIKey(ctx context.Context, since, until time.Time) ([]models.APIKeyUsage, error)
+
 	// --- Configuration ---
 
 	// GetAllConfig returns all config key-value pairs.

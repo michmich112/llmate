@@ -43,6 +43,12 @@ func extractAccessKey(r *http.Request) string {
 	return strings.TrimSpace(r.Header.Get("X-Access-Key"))
 }
 
+// ValidateAccessKey reports whether the request carries a valid ACCESS_KEY.
+// It reuses the same timing-safe comparison as AccessKeyMiddleware.
+func ValidateAccessKey(accessKey string, r *http.Request) bool {
+	return isValidKey(extractAccessKey(r), accessKey)
+}
+
 // isValidKey compares the candidate key to the configured accessKey using
 // timing-safe comparison to prevent timing attacks.
 func isValidKey(candidateKey, accessKey string) bool {

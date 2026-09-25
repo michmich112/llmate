@@ -14,7 +14,7 @@ import (
 const requestLogCols = `id, timestamp, client_ip, method, path, requested_model, resolved_model,
 	provider_id, provider_name, status_code, is_streamed, ttft_ms, total_time_ms,
 	prompt_tokens, completion_tokens, total_tokens, cached_tokens, error_message, created_at,
-	estimated_cost_usd`
+	estimated_cost_usd, api_key_id, api_key_name`
 
 // applyRequestLogFields populates the nullable fields of log from the scanned null-wrapper values.
 // Shared between scanRequestLog and scanRequestLogFull to avoid duplication.
@@ -77,6 +77,7 @@ func scanRequestLog(scan func(...any) error) (models.RequestLog, error) {
 		&promptTokens, &completionTokens, &totalTokens, &cachedTokens,
 		&errorMessage, &createdAt,
 		&estimatedCost,
+		&log.APIKeyID, &log.APIKeyName,
 	)
 	if err != nil {
 		return models.RequestLog{}, err
@@ -90,7 +91,6 @@ func scanRequestLog(scan func(...any) error) (models.RequestLog, error) {
 	return log, nil
 }
 
-// scanRequestLogFull extends scanRequestLog with request_body and response_body. Used only in GetRequestLog (detail view).
 func scanRequestLogFull(scan func(...any) error) (models.RequestLog, error) {
 	var log models.RequestLog
 	var requestedModel, resolvedModel, providerID, providerName, errorMessage sql.NullString
@@ -106,6 +106,7 @@ func scanRequestLogFull(scan func(...any) error) (models.RequestLog, error) {
 		&promptTokens, &completionTokens, &totalTokens, &cachedTokens,
 		&errorMessage, &createdAt,
 		&estimatedCost,
+		&log.APIKeyID, &log.APIKeyName,
 		&requestBody, &responseBody,
 	)
 	if err != nil {
@@ -132,17 +133,14 @@ func (s *SQLiteStore) InsertRequestLog(ctx context.Context, log *models.RequestL
 		 (id, timestamp, client_ip, method, path, requested_model, resolved_model,
 		  provider_id, provider_name, status_code, is_streamed, ttft_ms, total_time_ms,
 		  prompt_tokens, completion_tokens, total_tokens, cached_tokens, error_message, created_at,
-		  estimated_cost_usd, request_body, response_body)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		  estimated_cost_usd, request_body, response_body, api_key_id, api_key_name)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		log.ID, log.Timestamp, log.ClientIP, log.Method, log.Path,
-		nullStr(log.RequestedModel), nullStr(log.ResolvedModel),
-		nullStr(log.ProviderID), nullStr(log.ProviderName),
-		log.StatusCode, log.IsStreamed,
-		nullInt(log.TTFTMs), log.TotalTimeMs,
-		nullInt(log.PromptTokens), nullInt(log.CompletionTokens),
-		nullInt(log.TotalTokens), nullInt(log.CachedTokens),
-		nullStr(log.ErrorMessage), log.CreatedAt,
-		nullFloat64(log.EstimatedCostUSD), nullStr(log.RequestBody), nullStr(log.ResponseBody),
+		log.RequestedModel, log.ResolvedModel, log.ProviderID, log.ProviderName,
+		log.StatusCode, log.IsStreamed, log.TTFTMs, log.TotalTimeMs,
+		log.PromptTokens, log.CompletionTokens, log.TotalTokens, log.CachedTokens,
+		log.ErrorMessage, log.CreatedAt,
+		log.EstimatedCostUSD, log.RequestBody, log.ResponseBody, log.APIKeyID, log.APIKeyName,
 	)
 	if err != nil {
 		return fmt.Errorf("insert request log: %w", err)

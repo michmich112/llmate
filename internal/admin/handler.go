@@ -3,7 +3,9 @@ package admin
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -14,6 +16,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
+	"github.com/llmate/gateway/internal/auth"
 	"github.com/llmate/gateway/internal/db"
 	"github.com/llmate/gateway/internal/models"
 	"github.com/llmate/gateway/internal/pricing"
@@ -29,6 +32,7 @@ type Handler struct {
 	queryWorker      *QueryWorker
 	onRoutingChanged proxy.RoutingChangeNotifier
 	active           *proxy.ActiveRegistry
+	accessKey        string
 }
 
 // HandlerConfig configures optional admin runtime hooks.
@@ -36,6 +40,7 @@ type HandlerConfig struct {
 	OnHTTPIdleConnTimeoutSaved func(seconds int)
 	OnRoutingChanged           proxy.RoutingChangeNotifier
 	OnConfigChanged            func()
+	AccessKey                  string
 }
 
 // NewHandler creates a new admin Handler backed by the given store.
@@ -53,6 +58,7 @@ func NewHandler(store db.Store, cfg HandlerConfig, statsAcc *stats.Accumulator, 
 			onConfigChanged: cfg.OnConfigChanged,
 		},
 		statsAcc: statsAcc, queryWorker: queryWorker, onRoutingChanged: cfg.OnRoutingChanged,
+		accessKey: cfg.AccessKey,
 	}
 }
 
@@ -69,7 +75,12 @@ func (h *Handler) notifyRoutingChanged() {
 func (h *Handler) Routes() chi.Router {
 	r := chi.NewRouter()
 
-	r.Post("/auth", h.HandleAuth)
+	r.Get("/keys", h.HandleListAPIKeys)
+	r.Post("/keys", h.HandleCreateAPIKey)
+	r.Put("/keys/{id}", h.HandleUpdateAPIKey)
+	r.Delete("/keys/{id}", h.HandleDeleteAPIKey)
+	r.Get("/usage", h.HandleUsageByKey)
+	r.Get("/me/usage", h.HandleMyUsage)
 
 	r.Get("/providers", h.HandleListProviders)
 	r.Post("/providers", h.HandleCreateProvider)
@@ -146,10 +157,206 @@ func parseDurationParam(s string) (time.Duration, error) {
 	return d, nil
 }
 
-// HandleAuth responds with {"valid":true}. Reaching this handler implies the
-// ACCESS_KEY middleware has already authenticated the request.
+// HandleAuth responds with {"valid":true} if the request is authenticated by
+// either a valid ACCESS_KEY or a valid, active API key. It is used by the
+// frontend login flow which accepts either credential.
 func (h *Handler) HandleAuth(w http.ResponseWriter, r *http.Request) {
-	respondJSON(w, http.StatusOK, map[string]bool{"valid": true})
+	if auth.ValidateAccessKey(h.accessKey, r) {
+		respondJSON(w, http.StatusOK, map[string]bool{"valid": true})
+		return
+	}
+
+	token := proxy.BearerToken(r)
+	if token != "" {
+		key, err := h.store.GetAPIKeyByHash(r.Context(), proxy.HashKey(token))
+		if err == nil && key != nil && key.IsActive {
+			respondJSON(w, http.StatusOK, map[string]bool{"valid": true})
+			return
+		}
+	}
+
+	respondError(w, http.StatusUnauthorized, "unauthorized")
+}
+
+// HandleListAPIKeys returns all API keys (the sha256 hash is never serialized).
+func (h *Handler) HandleListAPIKeys(w http.ResponseWriter, r *http.Request) {
+	keys, err := h.store.ListAPIKeys(r.Context())
+	if err != nil {
+		respondError(w, http.StatusInternalServerError, "failed to list api keys")
+		return
+	}
+	if keys == nil {
+		keys = []models.APIKey{}
+	}
+	respondJSON(w, http.StatusOK, map[string]interface{}{"keys": keys})
+}
+
+// HandleCreateAPIKey creates a new API key. The raw key is returned once and
+// never stored; only its sha256 hash is persisted.
+func (h *Handler) HandleCreateAPIKey(w http.ResponseWriter, r *http.Request) {
+	var body models.APIKeyCreateRequest
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		respondError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	if strings.TrimSpace(body.Name) == "" {
+		respondError(w, http.StatusBadRequest, "name is required")
+		return
+	}
+	if body.RateLimitRPM != nil && *body.RateLimitRPM <= 0 {
+		respondError(w, http.StatusBadRequest, "rate_limit_rpm must be > 0")
+		return
+	}
+	if body.RateLimitTPM != nil && *body.RateLimitTPM <= 0 {
+		respondError(w, http.StatusBadRequest, "rate_limit_tpm must be > 0")
+		return
+	}
+
+	raw := make([]byte, 32)
+	if _, err := rand.Read(raw); err != nil {
+		respondError(w, http.StatusInternalServerError, "failed to generate api key")
+		return
+	}
+	rawKey := hex.EncodeToString(raw)
+
+	now := time.Now().UTC()
+	k := models.APIKey{
+		ID:           uuid.NewString(),
+		KeyHash:      proxy.HashKey(rawKey),
+		Name:         body.Name,
+		IsActive:     true,
+		RateLimitRPM: body.RateLimitRPM,
+		RateLimitTPM: body.RateLimitTPM,
+		CreatedAt:    now,
+	}
+	if err := h.store.CreateAPIKey(r.Context(), &k); err != nil {
+		respondError(w, http.StatusInternalServerError, "failed to create api key")
+		return
+	}
+
+	respondJSON(w, http.StatusCreated, map[string]interface{}{"api_key": k, "key": rawKey})
+}
+
+// HandleUpdateAPIKey updates a key's state. The client sends the full state; a
+// nil RateLimitRPM/TPM removes the limit.
+func (h *Handler) HandleUpdateAPIKey(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	if id == "" {
+		respondError(w, http.StatusBadRequest, "id is required")
+		return
+	}
+
+	var body models.APIKeyUpdateRequest
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		respondError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	if strings.TrimSpace(body.Name) == "" {
+		respondError(w, http.StatusBadRequest, "name is required")
+		return
+	}
+	if body.RateLimitRPM != nil && *body.RateLimitRPM <= 0 {
+		respondError(w, http.StatusBadRequest, "rate_limit_rpm must be > 0")
+		return
+	}
+	if body.RateLimitTPM != nil && *body.RateLimitTPM <= 0 {
+		respondError(w, http.StatusBadRequest, "rate_limit_tpm must be > 0")
+		return
+	}
+
+	existing, err := h.store.GetAPIKey(r.Context(), id)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			respondError(w, http.StatusNotFound, "api key not found")
+			return
+		}
+		respondError(w, http.StatusInternalServerError, "failed to get api key")
+		return
+	}
+
+	merged := *existing
+	merged.Name = body.Name
+	if body.IsActive != nil {
+		merged.IsActive = *body.IsActive
+	}
+	merged.RateLimitRPM = body.RateLimitRPM
+	merged.RateLimitTPM = body.RateLimitTPM
+
+	if err := h.store.UpdateAPIKey(r.Context(), &merged); err != nil {
+		respondError(w, http.StatusInternalServerError, "failed to update api key")
+		return
+	}
+	respondJSON(w, http.StatusOK, map[string]interface{}{"api_key": merged})
+}
+
+// HandleDeleteAPIKey removes an API key by ID.
+func (h *Handler) HandleDeleteAPIKey(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	if id == "" {
+		respondError(w, http.StatusBadRequest, "id is required")
+		return
+	}
+	if err := h.store.DeleteAPIKey(r.Context(), id); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			respondError(w, http.StatusNotFound, "api key not found")
+			return
+		}
+		respondError(w, http.StatusInternalServerError, "failed to delete api key")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// HandleUsageByKey returns per-key usage summaries for the admin dashboard.
+func (h *Handler) HandleUsageByKey(w http.ResponseWriter, r *http.Request) {
+	since, until, err := parseTimeRange(r)
+	if err != nil {
+		respondError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	usage, err := h.store.UsageByAPIKey(r.Context(), since, until)
+	if err != nil {
+		respondError(w, http.StatusInternalServerError, "failed to get usage")
+		return
+	}
+	if usage == nil {
+		usage = []models.APIKeyUsage{}
+	}
+	respondJSON(w, http.StatusOK, map[string]interface{}{"usage": usage})
+}
+
+// HandleMyUsage returns usage for the API key used to authenticate this request.
+// It is reachable with a valid API key (open route), not ACCESS_KEY admin credentials.
+func (h *Handler) HandleMyUsage(w http.ResponseWriter, r *http.Request) {
+	token := proxy.BearerToken(r)
+	if token == "" {
+		respondError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	key, err := h.store.GetAPIKeyByHash(r.Context(), proxy.HashKey(token))
+	if err != nil || key == nil || !key.IsActive {
+		respondError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+
+	since, until, err := parseTimeRange(r)
+	if err != nil {
+		respondError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	usage, err := h.store.UsageByAPIKey(r.Context(), since, until)
+	if err != nil {
+		respondError(w, http.StatusInternalServerError, "failed to get usage")
+		return
+	}
+	my := models.APIKeyUsage{}
+	for _, u := range usage {
+		if u.APIKeyID == key.ID {
+			my = u
+			break
+		}
+	}
+	respondJSON(w, http.StatusOK, map[string]interface{}{"usage": my, "api_key": key.Name})
 }
 
 // HandleActive returns the current in-flight proxy requests.
@@ -940,4 +1147,27 @@ func (h *Handler) HandleGetStreamingLogs(w http.ResponseWriter, r *http.Request)
 		logs[i].CumulativeBody = acc.String()
 	}
 	respondJSON(w, http.StatusOK, map[string]interface{}{"streaming_logs": logs})
+}
+
+// parseTimeRange parses optional RFC3339 "since"/"until" query params.
+// Missing params default to the last 24 hours.
+func parseTimeRange(r *http.Request) (time.Time, time.Time, error) {
+	q := r.URL.Query()
+	until := time.Now().UTC()
+	since := until.Add(-24 * time.Hour)
+	if s := q.Get("since"); s != "" {
+		t, err := time.Parse(time.RFC3339, s)
+		if err != nil {
+			return time.Time{}, time.Time{}, fmt.Errorf("invalid since: must be RFC3339")
+		}
+		since = t
+	}
+	if s := q.Get("until"); s != "" {
+		t, err := time.Parse(time.RFC3339, s)
+		if err != nil {
+			return time.Time{}, time.Time{}, fmt.Errorf("invalid until: must be RFC3339")
+		}
+		until = t
+	}
+	return since, until, nil
 }

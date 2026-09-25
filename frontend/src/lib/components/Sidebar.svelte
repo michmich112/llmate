@@ -10,6 +10,7 @@
     { label: 'Providers', path: '/providers' },
     { label: 'Models', path: '/dashboard/models' },
     { label: 'Logs', path: '/logs' },
+    { label: 'API Keys', path: '/keys' },
     { label: 'Settings', path: '/settings' }
   ] as const;
 
