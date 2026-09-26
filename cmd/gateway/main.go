@@ -155,6 +155,9 @@ func main() {
 		r.Get("/me", adminHandler.HandleMe)
 		r.Get("/me/usage", adminHandler.HandleMyUsage)
 		r.Get("/me/usage/timeseries", adminHandler.HandleMyTimeSeries)
+		r.Get("/me/stats", adminHandler.HandleMyStats)
+		r.Get("/me/stats/timeseries", adminHandler.HandleMyStatsTimeSeries)
+		r.Get("/me/stats/lifetime", adminHandler.HandleMyLifetimeCost)
 
 		// Admin-only routes live in a separate middleware-protected router.
 		r.Mount("/", adminAPI)

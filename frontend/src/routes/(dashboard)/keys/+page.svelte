@@ -16,6 +16,7 @@
   let rateLimitRPM = $state('');
   let rateLimitTPM = $state('');
   let showKey = $state<string | null>(null);
+  let revealedId = $state<string | null>(null);
 
   onMount(async () => {
     loading = true;
@@ -51,6 +52,7 @@
       const created = await api.createAPIKey(input);
       keys = [created.api_key, ...keys];
       showKey = created.key;
+      revealedId = created.api_key.id;
       name = '';
       rateLimitRPM = '';
       rateLimitTPM = '';
@@ -64,8 +66,13 @@
   async function handleToggle(key: APIKey, isActive: boolean) {
     error = null;
     try {
-      await api.updateAPIKey(key.id, { name: key.name, is_active: isActive });
-      keys = keys.map((k) => (k.id === key.id ? { ...k, is_active: isActive } : k));
+      const updated = await api.updateAPIKey(key.id, {
+        name: key.name,
+        is_active: isActive,
+        ...(key.rate_limit_rpm != null ? { rate_limit_rpm: key.rate_limit_rpm } : {}),
+        ...(key.rate_limit_tpm != null ? { rate_limit_tpm: key.rate_limit_tpm } : {})
+      });
+      keys = keys.map((k) => (k.id === key.id ? updated : k));
     } catch (e) {
       error = e instanceof Error ? e.message : 'Failed to update API key';
     }
@@ -76,7 +83,10 @@
     try {
       await api.deleteAPIKey(id);
       keys = keys.filter((k) => k.id !== id);
-      if (showKey === id) showKey = null;
+      if (revealedId === id) {
+        showKey = null;
+        revealedId = null;
+      }
     } catch (e) {
       error = e instanceof Error ? e.message : 'Failed to delete API key';
     }

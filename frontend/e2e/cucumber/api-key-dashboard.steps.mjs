@@ -22,8 +22,36 @@ When('I visit the admin-only route {string}', async function (route) {
   await this.page.waitForLoadState('networkidle');
 });
 
-Then('I am redirected to \\/usage', async function () {
-  expect(this.page.url()).toContain('/usage');
+Then('I am redirected to the dashboard', async function () {
+  await expect.poll(() => new URL(this.page.url()).pathname, { timeout: 10000 }).toBe('/');
+});
+
+Then('I do not see provider information', async function () {
+  await expect(this.page.getByText('Requests by Model')).toBeVisible();
+  await expect(this.page.locator('[data-testid="requests-by-provider"]')).toHaveCount(0);
+  await expect(this.page.getByText('healthy provider')).toHaveCount(0);
+  await expect(this.page.getByText('active right now')).toHaveCount(0);
+});
+
+When('I request my dashboard stats with the {string} API key', async function (name) {
+  const rec = this.createdKeys.find((k) => k.name === name);
+  expect(rec).toBeTruthy();
+  const res = await this.page.request.fetch(`${ROOT}/admin/me/stats?since=24h`, {
+    headers: { Authorization: `Bearer ${rec.key}` },
+  });
+  expect(res.status()).toBe(200);
+  this.myStats = await res.json();
+});
+
+Then('the dashboard stats omit provider fields', async function () {
+  expect(this.myStats).toBeTruthy();
+  expect(this.myStats.by_provider).toBeUndefined();
+  expect(this.myStats.active_requests).toBeUndefined();
+  expect(Array.isArray(this.myStats.by_model)).toBe(true);
+});
+
+Then('I see provider information', async function () {
+  await expect(this.page.locator('[data-testid="requests-by-provider"]')).toBeVisible();
 });
 
 When('I call the admin API endpoints {string} with the {string} API key', async function (endpoints, name) {

@@ -196,6 +196,10 @@ type Store interface {
 	// GetDashboardStats returns aggregated statistics in [since, until].
 	GetDashboardStats(ctx context.Context, since, until time.Time) (*models.DashboardStats, error)
 
+	// GetDashboardStatsForAPIKey is GetDashboardStats restricted to one API key.
+	// ByProvider is left empty so key-scoped callers do not receive provider names.
+	GetDashboardStatsForAPIKey(ctx context.Context, apiKeyID string, since, until time.Time) (*models.DashboardStats, error)
+
 	// GetTimeSeries returns request metrics bucketed by time.
 	// granularity must be "hour" or "day".
 	GetTimeSeries(ctx context.Context, since, until time.Time, granularity string) ([]models.TimeSeriesPoint, error)
@@ -207,6 +211,9 @@ type Store interface {
 
 	// GetLifetimeCost returns all-time estimated spend from request logs.
 	GetLifetimeCost(ctx context.Context) (*models.LifetimeCost, error)
+
+	// GetLifetimeCostForAPIKey is GetLifetimeCost restricted to one API key.
+	GetLifetimeCostForAPIKey(ctx context.Context, apiKeyID string) (*models.LifetimeCost, error)
 
 	// --- Health ---
 

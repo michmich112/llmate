@@ -48,9 +48,11 @@ type mockStore struct {
 	updateProviderModelCosts    func(ctx context.Context, id string, m *models.ProviderModel) error
 	getProviderModelCosts       func(ctx context.Context, providerID, modelID string) (*models.ProviderModel, error)
 	getDashboardStats           func(ctx context.Context, since, until time.Time) (*models.DashboardStats, error)
+	getDashboardStatsForAPIKey  func(ctx context.Context, apiKeyID string, since, until time.Time) (*models.DashboardStats, error)
 	getTimeSeries               func(ctx context.Context, since, until time.Time, granularity string) ([]models.TimeSeriesPoint, error)
 	timeSeriesByAPIKey          func(ctx context.Context, apiKeyID string, since, until time.Time, granularity string) ([]models.TimeSeriesPoint, error)
 	getLifetimeCost             func(ctx context.Context) (*models.LifetimeCost, error)
+	getLifetimeCostForAPIKey    func(ctx context.Context, apiKeyID string) (*models.LifetimeCost, error)
 	updateProviderHealth        func(ctx context.Context, id string, healthy bool) error
 	createAPIKey                func(ctx context.Context, k *models.APIKey) error
 	getAPIKeyByHash             func(ctx context.Context, keyHash string) (*models.APIKey, error)
@@ -230,6 +232,12 @@ func (m *mockStore) GetDashboardStats(ctx context.Context, since, until time.Tim
 	}
 	return &models.DashboardStats{}, nil
 }
+func (m *mockStore) GetDashboardStatsForAPIKey(ctx context.Context, apiKeyID string, since, until time.Time) (*models.DashboardStats, error) {
+	if m.getDashboardStatsForAPIKey != nil {
+		return m.getDashboardStatsForAPIKey(ctx, apiKeyID, since, until)
+	}
+	return &models.DashboardStats{ByModel: []models.ModelStats{}, ByProvider: []models.ProviderStats{}}, nil
+}
 func (m *mockStore) GetTimeSeries(ctx context.Context, since, until time.Time, granularity string) ([]models.TimeSeriesPoint, error) {
 	if m.getTimeSeries != nil {
 		return m.getTimeSeries(ctx, since, until, granularity)
@@ -245,6 +253,12 @@ func (m *mockStore) TimeSeriesByAPIKey(ctx context.Context, apiKeyID string, sin
 func (m *mockStore) GetLifetimeCost(ctx context.Context) (*models.LifetimeCost, error) {
 	if m.getLifetimeCost != nil {
 		return m.getLifetimeCost(ctx)
+	}
+	return &models.LifetimeCost{}, nil
+}
+func (m *mockStore) GetLifetimeCostForAPIKey(ctx context.Context, apiKeyID string) (*models.LifetimeCost, error) {
+	if m.getLifetimeCostForAPIKey != nil {
+		return m.getLifetimeCostForAPIKey(ctx, apiKeyID)
 	}
 	return &models.LifetimeCost{}, nil
 }
@@ -1137,6 +1151,120 @@ func TestHandleUpdateAPIKey(t *testing.T) {
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandleUpdateAPIKey_ToggleKeepsLimits(t *testing.T) {
+	rpm, tpm := 10, 20
+	store := &mockStore{}
+	store.getAPIKey = func(ctx context.Context, id string) (*models.APIKey, error) {
+		return &models.APIKey{ID: id, Name: "old", IsActive: true, RateLimitRPM: &rpm, RateLimitTPM: &tpm}, nil
+	}
+	var saved *models.APIKey
+	store.updateAPIKey = func(ctx context.Context, k *models.APIKey) error {
+		cp := *k
+		if k.RateLimitRPM != nil {
+			v := *k.RateLimitRPM
+			cp.RateLimitRPM = &v
+		}
+		if k.RateLimitTPM != nil {
+			v := *k.RateLimitTPM
+			cp.RateLimitTPM = &v
+		}
+		saved = &cp
+		return nil
+	}
+	h := testAdminHandler(store, HandlerConfig{})
+
+	body := `{"name":"old","is_active":false,"rate_limit_rpm":10,"rate_limit_tpm":20}`
+	req := httptest.NewRequest(http.MethodPut, "/keys/k1", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := serve(h, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if saved == nil || saved.IsActive || saved.RateLimitRPM == nil || *saved.RateLimitRPM != 10 || saved.RateLimitTPM == nil || *saved.RateLimitTPM != 20 {
+		t.Fatalf("toggle should keep both limits, got %+v", saved)
+	}
+}
+
+func TestHandleUpdateAPIKey_NullClearsLimits(t *testing.T) {
+	rpm, tpm := 10, 20
+	store := &mockStore{}
+	store.getAPIKey = func(ctx context.Context, id string) (*models.APIKey, error) {
+		return &models.APIKey{ID: id, Name: "old", IsActive: true, RateLimitRPM: &rpm, RateLimitTPM: &tpm}, nil
+	}
+	var saved *models.APIKey
+	store.updateAPIKey = func(ctx context.Context, k *models.APIKey) error {
+		cp := *k
+		saved = &cp
+		return nil
+	}
+	h := testAdminHandler(store, HandlerConfig{})
+
+	body := `{"name":"old","is_active":true,"rate_limit_rpm":null,"rate_limit_tpm":null}`
+	req := httptest.NewRequest(http.MethodPut, "/keys/k1", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := serve(h, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if saved == nil || saved.RateLimitRPM != nil || saved.RateLimitTPM != nil {
+		t.Fatalf("explicit null should clear limits, got %+v", saved)
+	}
+}
+
+func TestHandleMyStats_OmitsProvider(t *testing.T) {
+	store := &mockStore{}
+	store.getAPIKeyByHash = func(ctx context.Context, keyHash string) (*models.APIKey, error) {
+		if keyHash == "" {
+			return nil, nil
+		}
+		return &models.APIKey{ID: "k1", Name: "my key", IsActive: true}, nil
+	}
+	store.getDashboardStatsForAPIKey = func(ctx context.Context, apiKeyID string, since, until time.Time) (*models.DashboardStats, error) {
+		if apiKeyID != "k1" {
+			t.Fatalf("expected key k1, got %q", apiKeyID)
+		}
+		return &models.DashboardStats{
+			TotalRequests: 4,
+			ByModel:       []models.ModelStats{{Model: "llama3", RequestCount: 4}},
+			ByProvider:    []models.ProviderStats{{ProviderID: "p1", ProviderName: "secret", RequestCount: 4}},
+		}, nil
+	}
+	h := testAdminHandler(store, HandlerConfig{})
+
+	req := httptest.NewRequest(http.MethodGet, "/me/stats?since=24h", nil)
+	req.Header.Set("Authorization", "Bearer testtoken")
+	rec := httptest.NewRecorder()
+	h.HandleMyStats(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var raw map[string]interface{}
+	if err := json.NewDecoder(rec.Body).Decode(&raw); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if _, ok := raw["by_provider"]; ok {
+		t.Fatalf("key stats must omit by_provider: %v", raw)
+	}
+	if _, ok := raw["active_requests"]; ok {
+		t.Fatalf("key stats must omit active_requests: %v", raw)
+	}
+	if raw["total_requests"] != float64(4) {
+		t.Fatalf("total_requests: %v", raw["total_requests"])
+	}
+}
+
+func TestHandleMyStats_Unauthorized(t *testing.T) {
+	h := testAdminHandler(&mockStore{}, HandlerConfig{})
+	req := httptest.NewRequest(http.MethodGet, "/me/stats", nil)
+	rec := httptest.NewRecorder()
+	h.HandleMyStats(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d", rec.Code)
 	}
 }
 

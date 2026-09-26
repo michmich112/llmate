@@ -1237,6 +1237,119 @@ func TestUsageByAPIKeyModel(t *testing.T) {
 	}
 }
 
+func TestUsageByAPIKey_RenamedKeySumsAllNames(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Second)
+
+	p := newProvider(uuid.NewString(), "Rename Provider", "https://rename.test", false, now)
+	if err := store.CreateProvider(ctx, p); err != nil {
+		t.Fatalf("CreateProvider: %v", err)
+	}
+
+	if err := store.CreateAPIKey(ctx, &models.APIKey{
+		ID: "k-renamed", KeyHash: "hash", Name: "current-name", IsActive: true, CreatedAt: now,
+	}); err != nil {
+		t.Fatalf("CreateAPIKey: %v", err)
+	}
+
+	tokens := 10
+	oldCost := 1.5
+	newCost := 2.5
+	orphanTokens := 7
+	orphanCost := 0.5
+	logs := []models.RequestLog{
+		{
+			ID: uuid.NewString(), Timestamp: now.Add(-2 * time.Minute), ClientIP: "127.0.0.1",
+			Method: "POST", Path: "/v1/chat/completions", RequestedModel: "m", ResolvedModel: "m",
+			ProviderID: p.ID, ProviderName: p.Name, StatusCode: 200, TotalTimeMs: 10,
+			TotalTokens: &tokens, EstimatedCostUSD: &oldCost, APIKeyID: "k-renamed", APIKeyName: "old-name", CreatedAt: now,
+		},
+		{
+			ID: uuid.NewString(), Timestamp: now.Add(-time.Minute), ClientIP: "127.0.0.1",
+			Method: "POST", Path: "/v1/chat/completions", RequestedModel: "m", ResolvedModel: "m",
+			ProviderID: p.ID, ProviderName: p.Name, StatusCode: 200, TotalTimeMs: 10,
+			TotalTokens: &tokens, EstimatedCostUSD: &newCost, APIKeyID: "k-renamed", APIKeyName: "current-name", CreatedAt: now,
+		},
+		{
+			ID: uuid.NewString(), Timestamp: now, ClientIP: "127.0.0.1",
+			Method: "POST", Path: "/v1/chat/completions", RequestedModel: "m", ResolvedModel: "m",
+			ProviderID: p.ID, ProviderName: p.Name, StatusCode: 200, TotalTimeMs: 10,
+			TotalTokens: &orphanTokens, EstimatedCostUSD: &orphanCost, APIKeyID: "k-deleted", APIKeyName: "gone", CreatedAt: now,
+		},
+	}
+	for i := range logs {
+		if err := store.InsertRequestLog(ctx, &logs[i]); err != nil {
+			t.Fatalf("InsertRequestLog: %v", err)
+		}
+	}
+
+	usage, err := store.UsageByAPIKey(ctx, now.Add(-10*time.Minute), now.Add(time.Minute))
+	if err != nil {
+		t.Fatalf("UsageByAPIKey: %v", err)
+	}
+	if len(usage) != 2 {
+		t.Fatalf("expected 2 key rows, got %+v", usage)
+	}
+	byID := map[string]models.APIKeyUsage{}
+	for _, u := range usage {
+		byID[u.APIKeyID] = u
+	}
+	renamed := byID["k-renamed"]
+	if renamed.APIKeyName != "current-name" || renamed.RequestCount != 2 || renamed.TotalTokens != 20 {
+		t.Fatalf("renamed key not summed: %+v", renamed)
+	}
+	if renamed.TotalCostUSD < 3.99 || renamed.TotalCostUSD > 4.01 {
+		t.Fatalf("renamed cost: %v", renamed.TotalCostUSD)
+	}
+	orphan := byID["k-deleted"]
+	if orphan.APIKeyName != "gone" || orphan.RequestCount != 1 || orphan.TotalTokens != 7 {
+		t.Fatalf("deleted key should fall back to log name: %+v", orphan)
+	}
+}
+
+func TestGetDashboardStatsForAPIKeyOmitsOtherKeysAndProviders(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Second)
+
+	p := newProvider(uuid.NewString(), "Hidden Provider", "https://hidden.test", false, now)
+	if err := store.CreateProvider(ctx, p); err != nil {
+		t.Fatalf("CreateProvider: %v", err)
+	}
+	tokens := 4
+	logs := []models.RequestLog{
+		{
+			ID: uuid.NewString(), Timestamp: now.Add(-time.Minute), ClientIP: "127.0.0.1",
+			Method: "POST", Path: "/v1/chat/completions", RequestedModel: "m", ResolvedModel: "m",
+			ProviderID: p.ID, ProviderName: p.Name, StatusCode: 200, TotalTimeMs: 12,
+			TotalTokens: &tokens, APIKeyID: "k1", APIKeyName: "one", CreatedAt: now,
+		},
+		{
+			ID: uuid.NewString(), Timestamp: now, ClientIP: "127.0.0.1",
+			Method: "POST", Path: "/v1/chat/completions", RequestedModel: "m", ResolvedModel: "m",
+			ProviderID: p.ID, ProviderName: p.Name, StatusCode: 500, TotalTimeMs: 20,
+			TotalTokens: &tokens, APIKeyID: "k2", APIKeyName: "two", CreatedAt: now,
+		},
+	}
+	for i := range logs {
+		if err := store.InsertRequestLog(ctx, &logs[i]); err != nil {
+			t.Fatalf("InsertRequestLog: %v", err)
+		}
+	}
+
+	stats, err := store.GetDashboardStatsForAPIKey(ctx, "k1", now.Add(-10*time.Minute), now.Add(time.Minute))
+	if err != nil {
+		t.Fatalf("GetDashboardStatsForAPIKey: %v", err)
+	}
+	if stats.TotalRequests != 1 || len(stats.ByModel) != 1 || stats.ByModel[0].RequestCount != 1 {
+		t.Fatalf("expected only k1 stats, got %+v", stats)
+	}
+	if len(stats.ByProvider) != 0 {
+		t.Fatalf("key stats must not include providers, got %+v", stats.ByProvider)
+	}
+}
+
 func TestTimeSeriesByAPIKey(t *testing.T) {
 	store := newTestStore(t)
 	ctx := context.Background()

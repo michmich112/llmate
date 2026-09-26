@@ -17,7 +17,7 @@
   ] as const;
 
   const visibleItems = $derived(
-    role === 'key' ? ([{ label: 'Dashboard', path: '/usage' }] as const) : navItems
+    role === 'key' ? ([{ label: 'Dashboard', path: '/' }] as const) : navItems
   );
 
   function isActive(path: string): boolean {

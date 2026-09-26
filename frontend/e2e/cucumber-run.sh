@@ -13,10 +13,10 @@ trap 'kill "$GW_PID" 2>/dev/null || true; pkill -f "bin/gateway" 2>/dev/null || 
 code=""
 for _ in $(seq 1 120); do
   code="$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:8099/" || true)"
-  if [ -n "$code" ]; then break; fi
+  if [ "$code" = "200" ]; then break; fi
   sleep 1
 done
-if [ -z "$code" ]; then
+if [ "$code" != "200" ]; then
   echo "gateway failed to start on 8099" >&2
   exit 1
 fi

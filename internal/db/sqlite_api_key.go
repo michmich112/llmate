@@ -171,15 +171,17 @@ func (s *SQLiteStore) QueryLogsByAPIKey(ctx context.Context, apiKeyID string, fi
 
 func (s *SQLiteStore) UsageByAPIKey(ctx context.Context, since, until time.Time) ([]models.APIKeyUsage, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT api_key_id, api_key_name,
+		`SELECT l.api_key_id,
+		        COALESCE(MAX(k.name), MAX(l.api_key_name), '') AS api_key_name,
 		        COUNT(*) AS request_count,
-		        SUM(IFNULL(total_tokens, 0)) AS total_tokens,
-		        SUM(IFNULL(estimated_cost_usd, 0)) AS total_cost_usd,
-		        MAX(timestamp) AS last_used_at
-		 FROM request_logs
-		 WHERE api_key_id IS NOT NULL AND api_key_id != ''
-		   AND timestamp >= ? AND timestamp <= ?
-		 GROUP BY api_key_id, api_key_name
+		        SUM(IFNULL(l.total_tokens, 0)) AS total_tokens,
+		        SUM(IFNULL(l.estimated_cost_usd, 0)) AS total_cost_usd,
+		        MAX(l.timestamp) AS last_used_at
+		 FROM request_logs l
+		 LEFT JOIN api_keys k ON k.id = l.api_key_id
+		 WHERE l.api_key_id IS NOT NULL AND l.api_key_id != ''
+		   AND l.timestamp >= ? AND l.timestamp <= ?
+		 GROUP BY l.api_key_id
 		 ORDER BY total_cost_usd DESC`,
 		since, until,
 	)
