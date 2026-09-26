@@ -64,7 +64,7 @@
   async function handleToggle(key: APIKey, isActive: boolean) {
     error = null;
     try {
-      await api.updateAPIKey(key.id, { is_active: isActive });
+      await api.updateAPIKey(key.id, { name: key.name, is_active: isActive });
       keys = keys.map((k) => (k.id === key.id ? { ...k, is_active: isActive } : k));
     } catch (e) {
       error = e instanceof Error ? e.message : 'Failed to update API key';

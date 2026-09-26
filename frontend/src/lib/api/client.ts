@@ -19,7 +19,8 @@ import type {
   APIKey,
   APIKeyCreateInput,
   APIKeyUpdateInput,
-  APIKeyUsage
+  APIKeyUsage,
+  ModelStats
 } from '$lib/types';
 
 function statsWindowParams(window?: string | StatsWindow): URLSearchParams {
@@ -49,18 +50,45 @@ class ApiClient {
     }
   }
 
-  setAccessKey(key: string): void {
+  async setAccessKey(key: string): Promise<void> {
     this.accessKey = key;
     localStorage.setItem('access_key', key);
+    let role: 'admin' | 'key' = 'admin';
+    try {
+      const me = await this.getMe();
+      role = me.role;
+    } catch {
+      role = 'admin';
+    }
+    localStorage.setItem('access_role', role);
   }
 
   clearAccessKey(): void {
     this.accessKey = null;
     localStorage.removeItem('access_key');
+    localStorage.removeItem('access_role');
   }
 
   isAuthenticated(): boolean {
     return !!this.accessKey;
+  }
+
+  getAccessKey(): string | null {
+    return this.accessKey;
+  }
+
+  getRole(): 'admin' | 'key' | null {
+    if (typeof localStorage === 'undefined') return null;
+    const role = localStorage.getItem('access_role');
+    if (role === 'admin' || role === 'key') return role;
+    return 'admin';
+  }
+
+  async getMe(): Promise<{ role: 'admin' | 'key'; api_key_id?: string; api_key_name?: string }> {
+    return this.request<{ role: 'admin' | 'key'; api_key_id?: string; api_key_name?: string }>(
+      'GET',
+      '/me'
+    );
   }
 
   private headers(key?: string): Record<string, string> {
@@ -88,8 +116,6 @@ class ApiClient {
     });
 
     if (res.status === 401) {
-      this.clearAccessKey();
-      window.location.href = '/login';
       throw new Error('Unauthorized');
     }
 
@@ -320,7 +346,9 @@ class ApiClient {
   }
 
   /** Usage for the API key that authenticates this call (My Usage page). */
-  async getMyUsage(apiKey: string): Promise<{ usage: APIKeyUsage; api_key: string }> {
+  async getMyUsage(
+    apiKey: string
+  ): Promise<{ usage: APIKeyUsage; api_key: string; by_model: ModelStats[] }> {
     const res = await fetch(`/admin/me/usage`, {
       method: 'GET',
       headers: { Authorization: `Bearer ${apiKey}` }
@@ -328,11 +356,35 @@ class ApiClient {
     if (res.status === 401) {
       throw new Error('Unauthorized');
     }
-    const data = await res.json().catch(() => ({}));
+    const data = (await res.json().catch(() => ({}))) as {
+      usage: APIKeyUsage;
+      api_key: string;
+      by_model?: ModelStats[];
+    };
+	if (!res.ok) {
+		throw new Error((data as { error?: string }).error ?? `Request failed: ${res.status}`);
+	}
+	return { usage: data.usage, api_key: data.api_key, by_model: data.by_model ?? [] };
+  }
+
+  /** Time-bucketed usage for the API key that authenticates this call (My Usage page). */
+  async getMyTimeSeries(
+    since: string,
+    until: string,
+    granularity: 'hour' | 'day'
+  ): Promise<{ points: TimeSeriesPoint[] }> {
+    const res = await fetch(`/admin/me/usage/timeseries?since=${encodeURIComponent(since)}&until=${encodeURIComponent(until)}&granularity=${granularity}`, {
+      method: 'GET',
+      headers: { Authorization: `Bearer ${api.getAccessKey()}` }
+    });
+    if (res.status === 401) {
+      throw new Error('Unauthorized');
+    }
+    const data = (await res.json().catch(() => ({}))) as { points: TimeSeriesPoint[] };
     if (!res.ok) {
       throw new Error((data as { error?: string }).error ?? `Request failed: ${res.status}`);
     }
-    return data as { usage: APIKeyUsage; api_key: string };
+    return { points: data.points ?? [] };
   }
 }
 

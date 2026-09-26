@@ -152,6 +152,10 @@ type Store interface {
 	// UsageByAPIKey returns per-key usage summaries from request logs.
 	UsageByAPIKey(ctx context.Context, since, until time.Time) ([]models.APIKeyUsage, error)
 
+	// UsageByAPIKeyModel returns per-model usage summaries aggregated from
+	// request_logs stamped with the given API key in the [since, until] range.
+	UsageByAPIKeyModel(ctx context.Context, apiKeyID string, since, until time.Time) ([]models.ModelStats, error)
+
 	// --- Configuration ---
 
 	// GetAllConfig returns all config key-value pairs.
@@ -195,6 +199,11 @@ type Store interface {
 	// GetTimeSeries returns request metrics bucketed by time.
 	// granularity must be "hour" or "day".
 	GetTimeSeries(ctx context.Context, since, until time.Time, granularity string) ([]models.TimeSeriesPoint, error)
+
+	// TimeSeriesByAPIKey returns request metrics bucketed by time, restricted
+	// to request_logs stamped with the given API key id.
+	// granularity must be "hour" or "day".
+	TimeSeriesByAPIKey(ctx context.Context, apiKeyID string, since, until time.Time, granularity string) ([]models.TimeSeriesPoint, error)
 
 	// GetLifetimeCost returns all-time estimated spend from request logs.
 	GetLifetimeCost(ctx context.Context) (*models.LifetimeCost, error)

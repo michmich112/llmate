@@ -207,6 +207,43 @@ func (s *SQLiteStore) UsageByAPIKey(ctx context.Context, since, until time.Time)
 	return usage, nil
 }
 
+// UsageByAPIKeyModel aggregates per-model usage for a single API key.
+func (s *SQLiteStore) UsageByAPIKeyModel(ctx context.Context, apiKeyID string, since, until time.Time) ([]models.ModelStats, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT
+			COALESCE(NULLIF(resolved_model, ''), requested_model, '') AS model,
+			COUNT(*) AS request_count,
+			AVG(CAST(total_time_ms AS REAL)) AS avg_latency_ms,
+			SUM(CASE WHEN status_code >= 400 THEN 1 ELSE 0 END) AS error_count,
+			COALESCE(SUM(COALESCE(total_tokens, 0)), 0) AS total_tokens
+		FROM request_logs
+		WHERE api_key_id = ? AND timestamp >= ? AND timestamp <= ?
+		GROUP BY COALESCE(NULLIF(resolved_model, ''), requested_model, '')
+		ORDER BY request_count DESC
+	`, apiKeyID, since, until)
+	if err != nil {
+		return nil, fmt.Errorf("usage by api key model: %w", err)
+	}
+	defer rows.Close()
+
+	byModel := []models.ModelStats{}
+	for rows.Next() {
+		var ms models.ModelStats
+		var avgLatency sql.NullFloat64
+		if err := rows.Scan(&ms.Model, &ms.RequestCount, &avgLatency, &ms.ErrorCount, &ms.TotalTokens); err != nil {
+			return nil, fmt.Errorf("usage by api key model scan: %w", err)
+		}
+		if avgLatency.Valid {
+			ms.AvgLatencyMs = avgLatency.Float64
+		}
+		byModel = append(byModel, ms)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("usage by api key model rows: %w", err)
+	}
+	return byModel, nil
+}
+
 // scanAPIKey scans a single api_keys row into *models.APIKey.
 func scanAPIKey(scan func(...any) error) (*models.APIKey, error) {
 	var k models.APIKey

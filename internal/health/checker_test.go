@@ -104,6 +104,9 @@ func (m *mockStore) GetDashboardStats(_ context.Context, _, _ time.Time) (*model
 func (m *mockStore) GetTimeSeries(_ context.Context, _, _ time.Time, _ string) ([]models.TimeSeriesPoint, error) {
 	return nil, nil
 }
+func (m *mockStore) TimeSeriesByAPIKey(_ context.Context, _ string, _, _ time.Time, _ string) ([]models.TimeSeriesPoint, error) {
+	return nil, nil
+}
 func (m *mockStore) GetLifetimeCost(_ context.Context) (*models.LifetimeCost, error) {
 	return nil, nil
 }
@@ -140,6 +143,9 @@ func (m *mockStore) QueryLogsByAPIKey(_ context.Context, _ string, _ models.LogF
 	return nil, 0, nil
 }
 func (m *mockStore) UsageByAPIKey(_ context.Context, _, _ time.Time) ([]models.APIKeyUsage, error) {
+	return nil, nil
+}
+func (m *mockStore) UsageByAPIKeyModel(_ context.Context, _ string, _, _ time.Time) ([]models.ModelStats, error) {
 	return nil, nil
 }
 func (m *mockStore) Close() error { return nil }
