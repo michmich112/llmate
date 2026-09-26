@@ -1236,3 +1236,83 @@ func TestUsageByAPIKeyModel(t *testing.T) {
 		t.Fatalf("expected empty non-nil slice, got %+v", empty)
 	}
 }
+
+func TestTimeSeriesByAPIKey(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Second)
+
+	p := newProvider(uuid.NewString(), "Timeseries Provider", "https://ts.test", false, now)
+	if err := store.CreateProvider(ctx, p); err != nil {
+		t.Fatalf("CreateProvider: %v", err)
+	}
+	pm := &models.ProviderModel{
+		ID: uuid.NewString(), ProviderID: p.ID, ModelID: "gpt-4",
+		CostPerMillionInput: &[]float64{10}[0], CostPerMillionOutput: &[]float64{20}[0], CreatedAt: now,
+	}
+	if err := store.CreateProviderModel(ctx, pm); err != nil {
+		t.Fatalf("CreateProviderModel: %v", err)
+	}
+
+	insert := func(keyID string, at time.Time, status int) {
+		t.Helper()
+		log := models.RequestLog{
+			ID: uuid.NewString(), Timestamp: at, ClientIP: "127.0.0.1",
+			Method: "POST", Path: "/v1/chat/completions", RequestedModel: "gpt-4", ResolvedModel: "gpt-4",
+			ProviderID: p.ID, ProviderName: p.Name, StatusCode: status, TotalTimeMs: 10,
+			PromptTokens: &[]int{10}[0], CompletionTokens: &[]int{5}[0], APIKeyID: keyID, APIKeyName: "key",
+			CreatedAt: now,
+		}
+		if err := store.InsertRequestLog(ctx, &log); err != nil {
+			t.Fatalf("InsertRequestLog: %v", err)
+		}
+	}
+	insert("k1", now.Add(-2*time.Hour), 200)
+	insert("k1", now.Add(-time.Hour), 200)
+	insert("k2", now.Add(-time.Hour), 200)
+
+	since := now.Add(-3 * time.Hour)
+	points, err := store.TimeSeriesByAPIKey(ctx, "k1", since, now.Add(time.Minute), "hour")
+	if err != nil {
+		t.Fatalf("TimeSeriesByAPIKey: %v", err)
+	}
+	var total int
+	for _, p := range points {
+		if p.Requests > 0 {
+			total += p.Requests
+		}
+	}
+	if total != 2 {
+		t.Fatalf("expected 2 requests for k1, got %d (%+v)", total, points)
+	}
+
+	// Unrestricted GetTimeSeries sees both keys.
+	all, err := store.GetTimeSeries(ctx, since, now.Add(time.Minute), "hour")
+	if err != nil {
+		t.Fatalf("GetTimeSeries: %v", err)
+	}
+	var allTotal int
+	for _, p := range all {
+		if p.Requests > 0 {
+			allTotal += p.Requests
+		}
+	}
+	if allTotal != 3 {
+		t.Fatalf("expected 3 requests unrestricted, got %d (%+v)", allTotal, all)
+	}
+
+	// Unknown key → buckets exist but all zero requests.
+	missing, err := store.TimeSeriesByAPIKey(ctx, "missing", since, now.Add(time.Minute), "hour")
+	if err != nil {
+		t.Fatalf("TimeSeriesByAPIKey missing: %v", err)
+	}
+	var missingTotal int
+	for _, p := range missing {
+		if p.Requests > 0 {
+			missingTotal += p.Requests
+		}
+	}
+	if missingTotal != 0 {
+		t.Fatalf("expected zero requests for unknown key, got %d (%+v)", missingTotal, missing)
+	}
+}

@@ -200,6 +200,11 @@ type Store interface {
 	// granularity must be "hour" or "day".
 	GetTimeSeries(ctx context.Context, since, until time.Time, granularity string) ([]models.TimeSeriesPoint, error)
 
+	// TimeSeriesByAPIKey returns request metrics bucketed by time, restricted
+	// to request_logs stamped with the given API key id.
+	// granularity must be "hour" or "day".
+	TimeSeriesByAPIKey(ctx context.Context, apiKeyID string, since, until time.Time, granularity string) ([]models.TimeSeriesPoint, error)
+
 	// GetLifetimeCost returns all-time estimated spend from request logs.
 	GetLifetimeCost(ctx context.Context) (*models.LifetimeCost, error)
 

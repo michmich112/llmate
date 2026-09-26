@@ -349,16 +349,25 @@ func (h *Handler) HandleUsageByKey(w http.ResponseWriter, r *http.Request) {
 	respondJSON(w, http.StatusOK, map[string]interface{}{"usage": usage})
 }
 
-// HandleMyUsage returns usage for the API key used to authenticate this request.
-// It is reachable with a valid API key (open route), not ACCESS_KEY admin credentials.
-func (h *Handler) HandleMyUsage(w http.ResponseWriter, r *http.Request) {
+// authenticateAPIKey resolves the request's bearer token to an active API key.
+// Returns nil when the request is unauthenticated or the key is inactive.
+func (h *Handler) authenticateAPIKey(r *http.Request) *models.APIKey {
 	token := proxy.BearerToken(r)
 	if token == "" {
-		respondError(w, http.StatusUnauthorized, "unauthorized")
-		return
+		return nil
 	}
 	key, err := h.store.GetAPIKeyByHash(r.Context(), proxy.HashKey(token))
 	if err != nil || key == nil || !key.IsActive {
+		return nil
+	}
+	return key
+}
+
+// HandleMyUsage returns usage for the API key used to authenticate this request.
+// It is reachable with a valid API key (open route), not ACCESS_KEY admin credentials.
+func (h *Handler) HandleMyUsage(w http.ResponseWriter, r *http.Request) {
+	key := h.authenticateAPIKey(r)
+	if key == nil {
 		respondError(w, http.StatusUnauthorized, "unauthorized")
 		return
 	}
@@ -389,6 +398,37 @@ func (h *Handler) HandleMyUsage(w http.ResponseWriter, r *http.Request) {
 		byModel = []models.ModelStats{}
 	}
 	respondJSON(w, http.StatusOK, map[string]interface{}{"usage": my, "api_key": key.Name, "by_model": byModel})
+}
+
+// HandleMyTimeSeries returns time-bucketed usage for the API key used to
+// authenticate this request (open route). granularity is optional and defaults
+// from the requested window length (hour <= 48h, otherwise day).
+func (h *Handler) HandleMyTimeSeries(w http.ResponseWriter, r *http.Request) {
+	key := h.authenticateAPIKey(r)
+	if key == nil {
+		respondError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+
+	since, until, err := parseTimeRange(r)
+	if err != nil {
+		respondError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	granularity := r.URL.Query().Get("granularity")
+	if granularity == "" {
+		granularity = defaultGranularity(until.Sub(since))
+	}
+	if granularity != "hour" && granularity != "day" {
+		respondError(w, http.StatusBadRequest, "granularity must be hour or day")
+		return
+	}
+	points, err := h.store.TimeSeriesByAPIKey(r.Context(), key.ID, since, until, granularity)
+	if err != nil {
+		respondError(w, http.StatusInternalServerError, "failed to load time series")
+		return
+	}
+	respondJSON(w, http.StatusOK, map[string]interface{}{"points": points})
 }
 
 // HandleActive returns the current in-flight proxy requests.

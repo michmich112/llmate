@@ -21,3 +21,9 @@ Feature: API-key user dashboard and access control
     Given I create an active API key via the admin API named "user-key"
     When I call the admin API endpoints "/admin/providers, /admin/keys, /admin/logs" with the "user-key" API key
     Then each admin endpoint returns 401 with "unauthorized"
+
+  Scenario: API key sees their own request timeseries populate
+    Given I create an active API key via the admin API named "usage-key"
+    And I seed request logs for the API key named "usage-key" with 5 requests over the last 6 hours
+    When I request my usage timeseries with the "usage-key" API key
+    Then the timeseries contains 5 requests for the "usage-key" API key

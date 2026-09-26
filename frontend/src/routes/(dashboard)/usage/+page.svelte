@@ -1,7 +1,10 @@
 <script lang="ts">
   import { api } from '$lib/api/client';
   import { Card, CardContent, CardHeader, CardTitle } from '$lib/components/ui/card';
-  import type { APIKeyUsage, ModelStats } from '$lib/types';
+  import type { APIKeyUsage, ModelStats, TimeSeriesPoint } from '$lib/types';
+  import { Chart, LineController, BarController, LineElement, BarElement, PointElement, LinearScale, TimeScale, CategoryScale, Tooltip, Legend, Filler } from 'chart.js';
+
+  Chart.register(LineController, BarController, LineElement, BarElement, PointElement, LinearScale, TimeScale, CategoryScale, Tooltip, Legend, Filler);
 
   let usage = $state<APIKeyUsage | null>(null);
   let keyName = $state('');
@@ -33,6 +36,73 @@
 
   $effect(() => {
     void loadUsage();
+  });
+
+  let points = $state<TimeSeriesPoint[]>([]);
+  let chartCanvas = $state<HTMLCanvasElement | null>(null);
+  let chartInstance: Chart | null = null;
+
+  async function loadTimeSeries() {
+    try {
+      const until = new Date();
+      const since = new Date(until.getTime() - 24 * 60 * 60 * 1000);
+      const res = await api.getMyTimeSeries(since.toISOString(), until.toISOString(), 'hour');
+      points = res.points;
+    } catch {
+      points = [];
+    }
+  }
+
+  $effect(() => {
+    void loadTimeSeries();
+  });
+
+  $effect(() => {
+    if (!chartCanvas || points.length === 0) {
+      chartInstance?.destroy();
+      chartInstance = null;
+      return;
+    }
+    chartInstance?.destroy();
+    const labels = points.map((p) => {
+      const d = new Date(p.bucket);
+      return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    });
+    const requests = points.map((p) => p.requests ?? 0);
+    chartInstance = new Chart(chartCanvas, {
+      type: 'bar',
+      data: {
+        labels,
+        datasets: [
+          {
+            label: 'Requests',
+            data: requests,
+            backgroundColor: 'rgba(20, 184, 166, 0.7)',
+            borderColor: 'rgb(20, 184, 166)',
+            borderWidth: 1
+          }
+        ]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: {
+          legend: { display: false },
+          tooltip: { callbacks: { label: (ctx: any) => `${ctx.parsed.y ?? 0} requests` } }
+        },
+        scales: {
+          x: { grid: { display: false }, offset: true },
+          y: { beginAtZero: true, ticks: { precision: 0 } }
+        }
+      }
+    });
+  });
+
+  $effect(() => {
+    return () => {
+      chartInstance?.destroy();
+      chartInstance = null;
+    };
   });
 </script>
 
@@ -130,6 +200,17 @@
         </Card>
       </div>
     {/if}
+
+    <Card>
+      <CardHeader>
+        <CardTitle>Requests over the last 24 hours</CardTitle>
+      </CardHeader>
+      <CardContent class="p-0">
+        <div class="h-56 w-full px-4 pb-4 pt-2">
+          <canvas bind:this={chartCanvas}></canvas>
+        </div>
+      </CardContent>
+    </Card>
 
     <Card>
       <CardHeader>

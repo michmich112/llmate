@@ -361,10 +361,30 @@ class ApiClient {
       api_key: string;
       by_model?: ModelStats[];
     };
+	if (!res.ok) {
+		throw new Error((data as { error?: string }).error ?? `Request failed: ${res.status}`);
+	}
+	return { usage: data.usage, api_key: data.api_key, by_model: data.by_model ?? [] };
+  }
+
+  /** Time-bucketed usage for the API key that authenticates this call (My Usage page). */
+  async getMyTimeSeries(
+    since: string,
+    until: string,
+    granularity: 'hour' | 'day'
+  ): Promise<{ points: TimeSeriesPoint[] }> {
+    const res = await fetch(`/admin/me/usage/timeseries?since=${encodeURIComponent(since)}&until=${encodeURIComponent(until)}&granularity=${granularity}`, {
+      method: 'GET',
+      headers: { Authorization: `Bearer ${api.getAccessKey()}` }
+    });
+    if (res.status === 401) {
+      throw new Error('Unauthorized');
+    }
+    const data = (await res.json().catch(() => ({}))) as { points: TimeSeriesPoint[] };
     if (!res.ok) {
       throw new Error((data as { error?: string }).error ?? `Request failed: ${res.status}`);
     }
-    return { usage: data.usage, api_key: data.api_key, by_model: data.by_model ?? [] };
+    return { points: data.points ?? [] };
   }
 }
 

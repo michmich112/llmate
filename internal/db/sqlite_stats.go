@@ -141,6 +141,16 @@ func (s *SQLiteStore) GetDashboardStats(ctx context.Context, since, until time.T
 // granularity must be "hour" or "day".
 // Hourly buckets use format "2006-01-02T15:00:00"; daily buckets use "2006-01-02".
 func (s *SQLiteStore) GetTimeSeries(ctx context.Context, since, until time.Time, granularity string) ([]models.TimeSeriesPoint, error) {
+	return s.timeSeries(ctx, since, until, granularity, "")
+}
+
+// TimeSeriesByAPIKey returns the same time-bucketed metrics as GetTimeSeries,
+// restricted to request_logs stamped with the given API key id.
+func (s *SQLiteStore) TimeSeriesByAPIKey(ctx context.Context, apiKeyID string, since, until time.Time, granularity string) ([]models.TimeSeriesPoint, error) {
+	return s.timeSeries(ctx, since, until, granularity, apiKeyID)
+}
+
+func (s *SQLiteStore) timeSeries(ctx context.Context, since, until time.Time, granularity, apiKeyID string) ([]models.TimeSeriesPoint, error) {
 	// substr(timestamp, 1, 19) extracts "YYYY-MM-DD HH:MM:SS" which SQLite's
 	// date functions always parse correctly, regardless of what follows (timezone
 	// offset variants, fractional seconds, corrupt "++" sequences from old
@@ -153,6 +163,13 @@ func (s *SQLiteStore) GetTimeSeries(ctx context.Context, since, until time.Time,
 		bucketExpr = `strftime('%Y-%m-%d', substr(timestamp, 1, 10))`
 	default:
 		return nil, fmt.Errorf("invalid granularity %q: must be hour or day", granularity)
+	}
+
+	apiKeyClause := ""
+	args := []interface{}{since, until}
+	if apiKeyID != "" {
+		apiKeyClause = ` AND r.api_key_id = ?`
+		args = append(args, apiKeyID)
 	}
 
 	rows, err := s.db.QueryContext(ctx, `
@@ -172,10 +189,10 @@ func (s *SQLiteStore) GetTimeSeries(ctx context.Context, since, until time.Time,
 			COALESCE(SUM(COALESCE(cached_tokens, 0)), 0) AS cached_tokens
 		FROM request_logs r
 		LEFT JOIN provider_models pm ON r.provider_id = pm.provider_id AND r.resolved_model = pm.model_id
-		WHERE r.timestamp >= ? AND r.timestamp <= ?
+		WHERE r.timestamp >= ? AND r.timestamp <= ?`+apiKeyClause+`
 		GROUP BY bucket
 		ORDER BY bucket ASC
-	`, since, until)
+	`, args...)
 	if err != nil {
 		return nil, fmt.Errorf("get time series: %w", err)
 	}

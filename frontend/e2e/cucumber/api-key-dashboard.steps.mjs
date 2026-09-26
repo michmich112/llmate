@@ -47,3 +47,25 @@ Then('each admin endpoint returns {int} with {string}', async function (status, 
     expect(json.error).toContain(errMsg);
   }
 });
+
+When('I request my usage timeseries with the {string} API key', async function (name) {
+  const rec = this.createdKeys.find((k) => k.name === name);
+  expect(rec).toBeTruthy();
+  const until = new Date();
+  const since = new Date(until.getTime() - 48 * 60 * 60 * 1000);
+  const res = await this.page.request.fetch(
+    `${ROOT}/admin/me/usage/timeseries?since=${encodeURIComponent(since.toISOString())}&until=${encodeURIComponent(until.toISOString())}&granularity=hour`,
+    { headers: { Authorization: `Bearer ${rec.key}` } }
+  );
+  expect(res.status()).toBe(200);
+  this.myTimeSeries = await res.json();
+});
+
+Then('the timeseries contains {int} requests for the {string} API key', async function (count, name) {
+  expect(this.myTimeSeries).toBeTruthy();
+  let total = 0;
+  for (const p of this.myTimeSeries.points) {
+    total += p.requests ?? 0;
+  }
+  expect(total).toBeGreaterThanOrEqual(count);
+});

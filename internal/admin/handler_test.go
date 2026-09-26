@@ -49,6 +49,7 @@ type mockStore struct {
 	getProviderModelCosts       func(ctx context.Context, providerID, modelID string) (*models.ProviderModel, error)
 	getDashboardStats           func(ctx context.Context, since, until time.Time) (*models.DashboardStats, error)
 	getTimeSeries               func(ctx context.Context, since, until time.Time, granularity string) ([]models.TimeSeriesPoint, error)
+	timeSeriesByAPIKey          func(ctx context.Context, apiKeyID string, since, until time.Time, granularity string) ([]models.TimeSeriesPoint, error)
 	getLifetimeCost             func(ctx context.Context) (*models.LifetimeCost, error)
 	updateProviderHealth        func(ctx context.Context, id string, healthy bool) error
 	createAPIKey                func(ctx context.Context, k *models.APIKey) error
@@ -232,6 +233,12 @@ func (m *mockStore) GetDashboardStats(ctx context.Context, since, until time.Tim
 func (m *mockStore) GetTimeSeries(ctx context.Context, since, until time.Time, granularity string) ([]models.TimeSeriesPoint, error) {
 	if m.getTimeSeries != nil {
 		return m.getTimeSeries(ctx, since, until, granularity)
+	}
+	return []models.TimeSeriesPoint{}, nil
+}
+func (m *mockStore) TimeSeriesByAPIKey(ctx context.Context, apiKeyID string, since, until time.Time, granularity string) ([]models.TimeSeriesPoint, error) {
+	if m.timeSeriesByAPIKey != nil {
+		return m.timeSeriesByAPIKey(ctx, apiKeyID, since, until, granularity)
 	}
 	return []models.TimeSeriesPoint{}, nil
 }
@@ -1226,6 +1233,80 @@ func TestHandleMyUsage_OK(t *testing.T) {
 	}
 	if len(resp.ByModel) != 2 || resp.ByModel[0].Model != "gpt-4" || resp.ByModel[0].RequestCount != 3 {
 		t.Fatalf("unexpected by_model: %+v", resp.ByModel)
+	}
+}
+
+func TestHandleMyTimeSeries_Unauthorized(t *testing.T) {
+	store := &mockStore{}
+	store.getAPIKeyByHash = func(ctx context.Context, keyHash string) (*models.APIKey, error) {
+		return nil, nil
+	}
+	h := testAdminHandler(store, HandlerConfig{})
+
+	req := httptest.NewRequest(http.MethodGet, "/me/usage/timeseries", nil)
+	rec := httptest.NewRecorder()
+	h.HandleMyTimeSeries(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandleMyTimeSeries_OK(t *testing.T) {
+	store := &mockStore{}
+	store.getAPIKeyByHash = func(ctx context.Context, keyHash string) (*models.APIKey, error) {
+		if keyHash == "" {
+			return nil, nil
+		}
+		return &models.APIKey{ID: "k1", Name: "my key", IsActive: true}, nil
+	}
+	store.timeSeriesByAPIKey = func(ctx context.Context, apiKeyID string, since, until time.Time, granularity string) ([]models.TimeSeriesPoint, error) {
+		if apiKeyID != "k1" {
+			t.Fatalf("expected api key id k1, got %q", apiKeyID)
+		}
+		if granularity != "hour" {
+			t.Fatalf("expected default granularity hour, got %q", granularity)
+		}
+		return []models.TimeSeriesPoint{
+			{Bucket: since.Format("2006-01-02T15:00:00"), Requests: 3, TotalTokens: 60},
+			{Bucket: since.Add(time.Hour).Format("2006-01-02T15:00:00"), Requests: 2, TotalTokens: 40},
+		}, nil
+	}
+	h := testAdminHandler(store, HandlerConfig{})
+
+	req := httptest.NewRequest(http.MethodGet, "/me/usage/timeseries?since=2026-01-01T00:00:00Z&until=2026-01-01T23:00:00Z", nil)
+	req.Header.Set("Authorization", "Bearer testtoken")
+	rec := httptest.NewRecorder()
+	h.HandleMyTimeSeries(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Points []models.TimeSeriesPoint `json:"points"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(resp.Points) != 2 || resp.Points[0].Requests != 3 {
+		t.Fatalf("unexpected points: %+v", resp.Points)
+	}
+}
+
+func TestHandleMyTimeSeries_BadGranularity(t *testing.T) {
+	store := &mockStore{}
+	store.getAPIKeyByHash = func(ctx context.Context, keyHash string) (*models.APIKey, error) {
+		return &models.APIKey{ID: "k1", Name: "my key", IsActive: true}, nil
+	}
+	h := testAdminHandler(store, HandlerConfig{})
+
+	req := httptest.NewRequest(http.MethodGet, "/me/usage/timeseries?since=2026-01-01T00:00:00Z&granularity=week", nil)
+	req.Header.Set("Authorization", "Bearer testtoken")
+	rec := httptest.NewRecorder()
+	h.HandleMyTimeSeries(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
 	}
 }
 
