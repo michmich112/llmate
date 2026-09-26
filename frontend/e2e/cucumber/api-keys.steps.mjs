@@ -220,6 +220,10 @@ When('I log in to the dashboard using the {string} API key', async function (nam
   await this.page.goto(`${ROOT}/login`);
   await this.page.locator('#access-key').fill(rec.key);
   await this.page.getByRole('button', { name: 'Sign in' }).click();
+  // The dashboard is a SvelteKit SPA: wait for the async login/route/data to
+  // settle so subsequent steps and screenshots see the rendered dashboard.
+  await this.page.waitForLoadState('networkidle').catch(() => {});
+  await this.page.waitForTimeout(250);
 });
 
 Then('the dashboard is accessible with the {string} API key', async function (name) {
