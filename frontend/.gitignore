@@ -6,3 +6,10 @@ build/
 e2e/test-results/
 e2e/playwright-report/
 e2e/screenshots/
+
+# Cucumber artifacts
+e2e/cucumber-report.html
+
+# Cucumber runtime tmp
+.cucumber/
+e2e/.tmp/
