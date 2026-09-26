@@ -35,6 +35,8 @@
 </script>
 
 <label
+  role="switch"
+  aria-checked={checked}
   data-state={switchState}
   class={cn(
     'inline-flex h-[24px] w-[44px] shrink-0 cursor-pointer items-center rounded-full border-2 border-transparent transition-colors',
@@ -46,7 +48,6 @@
 >
   <input
     type="checkbox"
-    role="switch"
     {id}
     {name}
     {checked}

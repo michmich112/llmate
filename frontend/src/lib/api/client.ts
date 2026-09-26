@@ -88,8 +88,6 @@ class ApiClient {
     });
 
     if (res.status === 401) {
-      this.clearAccessKey();
-      window.location.href = '/login';
       throw new Error('Unauthorized');
     }
 
