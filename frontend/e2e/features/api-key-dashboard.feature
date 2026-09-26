@@ -25,5 +25,28 @@ Feature: API-key user dashboard and access control
   Scenario: API key sees their own request timeseries populate
     Given I create an active API key via the admin API named "usage-key"
     And I seed request logs for the API key named "usage-key" with 5 requests over the last 6 hours
-    When I request my usage timeseries with the "usage-key" API key
-    Then the timeseries contains 5 requests for the "usage-key" API key
+    When I log in to the dashboard using the "usage-key" API key
+    Then I land on the usage dashboard
+    And I see the Requests metric shows 5
+    And the requests chart is rendered
+
+  Scenario: API key users see only their own usage
+    Given I create an active API key via the admin API named "alice"
+    And I seed request logs for the API key named "alice" with 5 requests over the last 6 hours
+    And I create an active API key via the admin API named "bob"
+    And I seed request logs for the API key named "bob" with 3 requests over the last 6 hours
+    When I log in to the dashboard using the "alice" API key
+    Then I land on the usage dashboard
+    And I see the Requests metric shows 5
+    When I log in to the dashboard using the "bob" API key
+    Then I land on the usage dashboard
+    And I see the Requests metric shows 3
+
+  Scenario: Admin sees usage across all API keys
+    Given I create an active API key via the admin API named "alice"
+    And I seed request logs for the API key named "alice" with 5 requests over the last 6 hours
+    And I create an active API key via the admin API named "bob"
+    And I seed request logs for the API key named "bob" with 3 requests over the last 6 hours
+    When I query the admin usage endpoint
+    Then the admin usage endpoint includes the "alice" API key with 5 requests
+    And the admin usage endpoint includes the "bob" API key with 3 requests

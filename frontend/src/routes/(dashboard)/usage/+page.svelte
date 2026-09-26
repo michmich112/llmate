@@ -134,7 +134,7 @@
             <CardTitle class="text-sm font-medium text-muted-foreground">Requests</CardTitle>
           </CardHeader>
           <CardContent>
-            <p class="text-3xl font-bold">{usage.request_count.toLocaleString()}</p>
+            <p class="text-3xl font-bold" data-testid="usage-metric-requests">{usage.request_count.toLocaleString()}</p>
           </CardContent>
         </Card>
         <Card>
@@ -207,7 +207,7 @@
       </CardHeader>
       <CardContent class="p-0">
         <div class="h-56 w-full px-4 pb-4 pt-2">
-          <canvas bind:this={chartCanvas}></canvas>
+          <canvas bind:this={chartCanvas} data-testid="usage-chart"></canvas>
         </div>
       </CardContent>
     </Card>
