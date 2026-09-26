@@ -1,4 +1,4 @@
-import { Given, When, Then } from '@cucumber/cucumber';
+import { After, Given, When, Then } from '@cucumber/cucumber';
 import { expect } from '@playwright/test';
 
 const ROOT = 'http://127.0.0.1:8099';
@@ -71,6 +71,42 @@ async function chatCompletion(ctx, { key, noAuth } = {}) {
 function findKey(keys, name) {
   return keys.find((k) => k.name === name);
 }
+
+async function setRequireAPIKeys(ctx, value) {
+  ctx.requireAPIKeysTouched = true;
+  const res = await ctx.page.request.fetch(`${ADMIN}/config`, {
+    method: 'PUT',
+    headers: { ...(await adminHeaders(ctx)), 'Content-Type': 'application/json' },
+    data: { require_api_keys: value },
+  });
+  expect(res.status()).toBe(200);
+  const json = await res.json();
+  expect(json.require_api_keys).toBe(value);
+}
+
+async function getRequireAPIKeys(ctx) {
+  const res = await ctx.page.request.fetch(`${ADMIN}/config`, {
+    method: 'GET',
+    headers: await adminHeaders(ctx),
+  });
+  expect(res.status()).toBe(200);
+  const json = await res.json();
+  return json.require_api_keys === true;
+}
+
+function requireSwitch(page) {
+  return page.locator('label[role="switch"]:has(#require-api-keys)');
+}
+
+// Keep later scenarios on the default (keys not required) if one of these turns the setting on.
+After(async function () {
+  if (!this.requireAPIKeysTouched) return;
+  await fetch(`${ADMIN}/config`, {
+    method: 'PUT',
+    headers: { Authorization: `Bearer ${this.authKey}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ require_api_keys: false }),
+  }).catch(() => {});
+});
 
 // ---------------------------------------------------------------------------
 // Scenario 1: admin manages API keys from the dashboard
@@ -178,6 +214,58 @@ Then('the gateway grants the request', async function () {
   expect(this.lastGw.status()).not.toBe(401);
   const json = await this.lastGw.json();
   expect(json.error).toContain('no available provider');
+});
+
+Given('the admin requires API keys', async function () {
+  await setRequireAPIKeys(this, true);
+});
+
+Given('the admin does not require API keys', async function () {
+  await setRequireAPIKeys(this, false);
+});
+
+When('I delete every API key via the admin API', async function () {
+  const keys = await listAdminKeys(this);
+  for (const key of keys) {
+    await deleteAdminKey(this, key.id);
+  }
+  const remaining = await listAdminKeys(this);
+  expect(remaining).toHaveLength(0);
+});
+
+async function setRequireFromDashboard(ctx, want) {
+  ctx.requireAPIKeysTouched = true;
+  const input = ctx.page.locator('#require-api-keys');
+  await expect(input).toBeEnabled();
+  const toggle = requireSwitch(ctx.page);
+  await expect(toggle).toBeVisible();
+  const checked = (await toggle.getAttribute('aria-checked')) === 'true';
+  if (checked === want) return;
+  const pending = ctx.page.waitForResponse(
+    (res) => res.url().includes('/admin/config') && res.request().method() === 'PUT'
+  );
+  await toggle.click();
+  const res = await pending;
+  expect(res.status()).toBe(200);
+  await expect(toggle).toHaveAttribute('aria-checked', want ? 'true' : 'false');
+}
+
+When('I turn on requiring API keys', async function () {
+  await setRequireFromDashboard(this, true);
+});
+
+When('I turn off requiring API keys', async function () {
+  await setRequireFromDashboard(this, false);
+});
+
+Then('API keys are required for gateway requests', async function () {
+  expect(await getRequireAPIKeys(this)).toBe(true);
+  await expect(requireSwitch(this.page)).toHaveAttribute('aria-checked', 'true');
+});
+
+Then('API keys are not required for gateway requests', async function () {
+  expect(await getRequireAPIKeys(this)).toBe(false);
+  await expect(requireSwitch(this.page)).toHaveAttribute('aria-checked', 'false');
 });
 
 // ---------------------------------------------------------------------------

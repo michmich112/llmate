@@ -8,6 +8,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/llmate/gateway/internal/models"
 )
 
 // apiKeyContextKey carries the authenticated API key on the request context so
@@ -32,15 +34,15 @@ func apiKeyFromContext(ctx context.Context) *keyAuth {
 // RPM is enforced as a hard limit (request count per 60s).
 // TPM is enforced as a soft limit using a rough prompt-token estimate per 60s.
 type KeyLimiter struct {
-	mu       sync.Mutex
-	entries  map[string]*keyLimiterEntry
+	mu      sync.Mutex
+	entries map[string]*keyLimiterEntry
 }
 
 type keyLimiterEntry struct {
-	rpmStart   time.Time
-	rpmCount   int
-	tpmStart   time.Time
-	tpmTokens  int
+	rpmStart  time.Time
+	rpmCount  int
+	tpmStart  time.Time
+	tpmTokens int
 }
 
 func NewKeyLimiter() *KeyLimiter {
@@ -99,29 +101,21 @@ func estimatePromptTokens(r *http.Request) int {
 }
 
 // RequireAPIKey wraps a proxy handler with API key authentication and rate limiting.
-// When require_api_keys config is disabled (default) and no API keys exist in the
-// store, auth is skipped (open gateway) so existing deployments remain unchanged
-// until keys are created.
+// Whether a missing key is rejected is controlled only by require_api_keys.
+// That setting does not depend on whether any API keys exist.
+// When it is off, requests without a key are accepted. A key that is presented
+// is always validated and rate-limited.
 func (h *Handler) RequireAPIKey(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		requireKeys := getConfigBool(h.config.Get(), "require_api_keys", false)
-		if !requireKeys {
-			keysExist, err := h.storeKeysExist()
-			if err != nil {
-				respondError(w, http.StatusInternalServerError, "internal error")
-				return
-			}
-			if !keysExist {
-				// No API keys configured — treat requests as unauthenticated (open gateway).
-				r = r.WithContext(context.WithValue(r.Context(), apiKeyContextKey{}, (*keyAuth)(nil)))
-				next(w, r)
-				return
-			}
-		}
-
+		requireKeys := getConfigBool(h.config.Get(), "require_api_keys", models.DefaultRequireAPIKeys)
 		token := BearerToken(r)
 		if token == "" {
-			respondError(w, http.StatusUnauthorized, "missing API key")
+			if requireKeys {
+				respondError(w, http.StatusUnauthorized, "missing API key")
+				return
+			}
+			r = r.WithContext(context.WithValue(r.Context(), apiKeyContextKey{}, (*keyAuth)(nil)))
+			next(w, r)
 			return
 		}
 
@@ -151,15 +145,6 @@ func (h *Handler) RequireAPIKey(next http.HandlerFunc) http.HandlerFunc {
 		r = r.WithContext(context.WithValue(r.Context(), apiKeyContextKey{}, &keyAuth{ID: key.ID, Name: key.Name}))
 		next(w, r)
 	}
-}
-
-// storeKeysExist reports whether any API keys exist.
-func (h *Handler) storeKeysExist() (bool, error) {
-	keys, err := h.store.ListAPIKeys(context.Background())
-	if err != nil {
-		return false, err
-	}
-	return len(keys) > 0, nil
 }
 
 // BearerToken extracts the token from "Authorization: Bearer <token>".

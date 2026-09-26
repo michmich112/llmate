@@ -17,18 +17,46 @@
   let rateLimitTPM = $state('');
   let showKey = $state<string | null>(null);
   let revealedId = $state<string | null>(null);
+  let requireAPIKeys = $state(false);
+  let configReady = $state(false);
+  let requireSaving = $state(false);
 
   onMount(async () => {
     loading = true;
     error = null;
+    const keysPromise = api.listAPIKeys();
+    const configPromise = api.getConfig();
     try {
-      keys = await api.listAPIKeys();
+      keys = await keysPromise;
     } catch (e) {
       error = e instanceof Error ? e.message : 'Failed to load API keys';
     } finally {
       loading = false;
     }
+    try {
+      const config = await configPromise;
+      requireAPIKeys = config.require_api_keys;
+      configReady = true;
+    } catch (e) {
+      error = e instanceof Error ? e.message : 'Failed to load API key settings';
+    }
   });
+
+  async function handleRequireAPIKeys(next: boolean) {
+    const previous = requireAPIKeys;
+    requireAPIKeys = next;
+    requireSaving = true;
+    error = null;
+    try {
+      const updated = await api.updateConfig({ require_api_keys: next });
+      requireAPIKeys = updated.require_api_keys;
+    } catch (e) {
+      requireAPIKeys = previous;
+      error = e instanceof Error ? e.message : 'Failed to update API key requirement';
+    } finally {
+      requireSaving = false;
+    }
+  }
 
   function formatDate(dateStr?: string): string {
     if (!dateStr) return '—';
@@ -99,6 +127,26 @@
     <p class="text-muted-foreground mt-1">Create and manage API keys for proxy access.</p>
   </div>
 
+  <Card>
+    <CardContent class="pt-6">
+      <div class="flex items-center justify-between gap-4">
+        <div class="space-y-1">
+          <label for="require-api-keys" class="text-sm font-medium leading-none">Require API keys</label>
+          <p class="text-sm text-muted-foreground">
+            When on, every gateway request must include a valid API key. When off, requests without a key are
+            accepted. Creating or deleting keys does not change this. A key that is sent is still checked.
+          </p>
+        </div>
+        <Switch
+          id="require-api-keys"
+          checked={requireAPIKeys}
+          disabled={!configReady || requireSaving}
+          onCheckedChange={handleRequireAPIKeys}
+        />
+      </div>
+    </CardContent>
+  </Card>
+
   {#if error}
     <div class="rounded-md border border-destructive/50 bg-destructive/10 px-4 py-3 text-sm text-destructive">
       {error}
@@ -153,7 +201,7 @@
     <CardContent>
       {#if loading}
         <div class="space-y-2">
-          {#each [1, 2, 3] as _}
+          {#each [1, 2, 3] as _, i (i)}
             <div class="h-12 animate-pulse rounded-md bg-muted"></div>
           {/each}
         </div>
@@ -172,7 +220,7 @@
             </tr>
           </thead>
           <tbody>
-            {#each keys as key}
+            {#each keys as key (key.id)}
               <tr class="border-b last:border-0">
                 <td class="px-4 py-3 font-medium">{key.name}</td>
                 <td class="px-4 py-3 text-muted-foreground">{formatDate(key.created_at)}</td>

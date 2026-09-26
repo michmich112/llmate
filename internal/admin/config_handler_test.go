@@ -2,18 +2,17 @@ package admin
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"sync"
-	"context"
 	"testing"
 
 	"github.com/llmate/gateway/internal/db"
 	"github.com/llmate/gateway/internal/models"
 	"github.com/llmate/gateway/internal/stats"
 )
-
 
 func testAdminHandlerReal(store db.Store, cfg HandlerConfig) *Handler {
 	qw := NewQueryWorker(store, 4)
@@ -107,6 +106,67 @@ func TestHandleGetConfig_DefaultRetentionDays(t *testing.T) {
 	if got.HTTPIdleConnTimeoutSeconds != models.DefaultHTTPIdleConnTimeoutSeconds {
 		t.Fatalf("default http idle: got %d want %d", got.HTTPIdleConnTimeoutSeconds, models.DefaultHTTPIdleConnTimeoutSeconds)
 	}
+	if got.RequireAPIKeys != models.DefaultRequireAPIKeys {
+		t.Fatalf("default require_api_keys: got %v want %v", got.RequireAPIKeys, models.DefaultRequireAPIKeys)
+	}
+}
+
+func TestHandleUpdateConfig_RequireAPIKeys(t *testing.T) {
+	store, err := db.NewSQLiteStore(":memory:")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	t.Cleanup(func() { store.Close() })
+
+	var reloads int
+	h := testAdminHandlerReal(store, HandlerConfig{
+		OnConfigChanged: func() { reloads++ },
+	})
+
+	put := func(body string) *httptest.ResponseRecorder {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodPut, "/config", bytes.NewReader([]byte(body)))
+		req.Header.Set("Content-Type", "application/json")
+		return serve(h, req)
+	}
+
+	t.Run("reject non-boolean", func(t *testing.T) {
+		rec := put(`{"require_api_keys":"yes"}`)
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("status %d, body %s", rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run("enable", func(t *testing.T) {
+		rec := put(`{"require_api_keys":true}`)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status %d, body %s", rec.Code, rec.Body.String())
+		}
+		var got models.Configuration
+		if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+			t.Fatal(err)
+		}
+		if !got.RequireAPIKeys {
+			t.Fatal("expected require_api_keys true")
+		}
+		if reloads != 1 {
+			t.Fatalf("config reload calls: got %d want 1", reloads)
+		}
+	})
+
+	t.Run("disable", func(t *testing.T) {
+		rec := put(`{"require_api_keys":false}`)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status %d, body %s", rec.Code, rec.Body.String())
+		}
+		var got models.Configuration
+		if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+			t.Fatal(err)
+		}
+		if got.RequireAPIKeys {
+			t.Fatal("expected require_api_keys false")
+		}
+	})
 }
 
 func TestHandleUpdateConfig_HTTPIdleConnTimeoutHook(t *testing.T) {

@@ -13,6 +13,7 @@ Feature: API key management, gateway auth, and rate limits
 
   Scenario: Gateway rejects requests with missing or invalid API keys
     Given I create an active API key via the admin API named "gateway-key"
+    And the admin requires API keys
     When I send a chat completion request with no API key
     Then the gateway returns 401 with "missing API key"
     When I send a chat completion request with an invalid API key
@@ -21,6 +22,35 @@ Feature: API key management, gateway auth, and rate limits
     And I send a chat completion request with the deactivated "temp-key" API key
     Then the gateway returns 401 with "invalid API key"
     When I send a chat completion request with the valid "gateway-key" API key
+    Then the gateway grants the request
+
+  Scenario: Requiring API keys follows the admin setting, not whether keys exist
+    Given I create an active API key via the admin API named "optional-key"
+    And the admin does not require API keys
+    When I send a chat completion request with no API key
+    Then the gateway grants the request
+    When the admin requires API keys
+    And I send a chat completion request with no API key
+    Then the gateway returns 401 with "missing API key"
+    When I delete every API key via the admin API
+    And I send a chat completion request with no API key
+    Then the gateway returns 401 with "missing API key"
+    When the admin does not require API keys
+    And I send a chat completion request with no API key
+    Then the gateway grants the request
+
+  Scenario: Admin requires or allows API keys from the dashboard
+    Given I log in to the dashboard as an admin
+    And I create an active API key via the admin API named "toggle-key"
+    And the admin does not require API keys
+    When I open the API keys page
+    And I turn on requiring API keys
+    Then API keys are required for gateway requests
+    When I send a chat completion request with no API key
+    Then the gateway returns 401 with "missing API key"
+    When I turn off requiring API keys
+    Then API keys are not required for gateway requests
+    When I send a chat completion request with no API key
     Then the gateway grants the request
 
   Scenario: API keys enforce per-key RPM rate limits on the gateway

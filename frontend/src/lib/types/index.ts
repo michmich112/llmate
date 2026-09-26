@@ -209,6 +209,8 @@ export interface Configuration {
   request_log_body_retention_days: number;
   /** Days to keep response_body text on each request log row. Independent of other retention settings. */
   response_log_body_retention_days: number;
+  /** When true, gateway requests must include a valid API key. Independent of whether any keys exist. */
+  require_api_keys: boolean;
 }
 
 export interface ConfigField {
@@ -228,6 +230,7 @@ export interface ConfigDefinition {
   streaming_log_body_retention_days: ConfigField;
   request_log_body_retention_days: ConfigField;
   response_log_body_retention_days: ConfigField;
+  require_api_keys: ConfigField;
 }
 
 export interface StreamingLog {

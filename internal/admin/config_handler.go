@@ -10,8 +10,8 @@ import (
 	"time"
 
 	"github.com/llmate/gateway/internal/db"
-	"github.com/llmate/gateway/internal/models"
 	"github.com/llmate/gateway/internal/logretention"
+	"github.com/llmate/gateway/internal/models"
 )
 
 type ConfigHandler struct {
@@ -65,6 +65,9 @@ func (h *ConfigHandler) HandleGetConfig(w http.ResponseWriter, r *http.Request) 
 		if v, err := strconv.Atoi(val); err == nil {
 			result.HTTPIdleConnTimeoutSeconds = models.ClampHTTPIdleConnTimeoutSeconds(v)
 		}
+	}
+	if val, ok := config["require_api_keys"]; ok {
+		result.RequireAPIKeys = val == "true"
 	}
 
 	respondJSON(w, http.StatusOK, result)
@@ -172,6 +175,14 @@ func (h *ConfigHandler) HandleUpdateConfig(w http.ResponseWriter, r *http.Reques
 			}
 			config[key] = strconv.Itoa(v)
 
+		case "require_api_keys":
+			var v bool
+			if err := json.Unmarshal(raw, &v); err != nil {
+				respondError(w, http.StatusBadRequest, "require_api_keys must be a boolean")
+				return
+			}
+			config[key] = strconv.FormatBool(v)
+
 		default:
 			respondError(w, http.StatusBadRequest, fmt.Sprintf("unknown config key: %s", key))
 			return
@@ -183,6 +194,10 @@ func (h *ConfigHandler) HandleUpdateConfig(w http.ResponseWriter, r *http.Reques
 			respondError(w, http.StatusInternalServerError, "failed to save configuration")
 			return
 		}
+	}
+
+	if h.onConfigChanged != nil {
+		h.onConfigChanged()
 	}
 
 	if raw, had := config["http_idle_conn_timeout_seconds"]; had && h.onHTTPIdleSaved != nil {
@@ -305,8 +320,8 @@ func (h *ConfigHandler) HandleConfigDefinition(w http.ResponseWriter, r *http.Re
 		},
 		"require_api_keys": {
 			Type:        "boolean",
-			Default:     false,
-			Description: "When on, every gateway request requires a valid API key. When off (default) and no API keys exist yet, the gateway stays open so existing deployments keep working; once any key exists, keys are required.",
+			Default:     models.DefaultRequireAPIKeys,
+			Description: "When on, every gateway request must include a valid API key. When off, requests without a key are accepted. This setting is the only control — creating or deleting API keys does not change it. A key that is sent is still validated.",
 		},
 	}
 
