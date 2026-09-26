@@ -142,6 +142,9 @@ func (m *mockStore) QueryLogsByAPIKey(_ context.Context, _ string, _ models.LogF
 func (m *mockStore) UsageByAPIKey(_ context.Context, _, _ time.Time) ([]models.APIKeyUsage, error) {
 	return nil, nil
 }
+func (m *mockStore) UsageByAPIKeyModel(_ context.Context, _ string, _, _ time.Time) ([]models.ModelStats, error) {
+	return nil, nil
+}
 func (m *mockStore) Close() error { return nil }
 
 // mockBreaker records ReportSuccess and ReportFailure calls per provider ID.

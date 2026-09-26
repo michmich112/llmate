@@ -197,6 +197,9 @@ func (s *mockStore) QueryLogsByAPIKey(_ context.Context, _ string, _ models.LogF
 func (s *mockStore) UsageByAPIKey(_ context.Context, _, _ time.Time) ([]models.APIKeyUsage, error) {
 	return nil, nil
 }
+func (s *mockStore) UsageByAPIKeyModel(_ context.Context, _ string, _, _ time.Time) ([]models.ModelStats, error) {
+	return nil, nil
+}
 func (s *mockStore) LoadRoutingData(_ context.Context) (*models.RoutingData, error) { return &models.RoutingData{}, nil }
 func (s *mockStore) Close() error                                                    { return nil }
 

@@ -152,6 +152,10 @@ type Store interface {
 	// UsageByAPIKey returns per-key usage summaries from request logs.
 	UsageByAPIKey(ctx context.Context, since, until time.Time) ([]models.APIKeyUsage, error)
 
+	// UsageByAPIKeyModel returns per-model usage summaries aggregated from
+	// request_logs stamped with the given API key in the [since, until] range.
+	UsageByAPIKeyModel(ctx context.Context, apiKeyID string, since, until time.Time) ([]models.ModelStats, error)
+
 	// --- Configuration ---
 
 	// GetAllConfig returns all config key-value pairs.

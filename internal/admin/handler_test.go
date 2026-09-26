@@ -58,6 +58,7 @@ type mockStore struct {
 	updateAPIKey                func(ctx context.Context, k *models.APIKey) error
 	deleteAPIKey                func(ctx context.Context, id string) error
 	usageByAPIKey               func(ctx context.Context, since, until time.Time) ([]models.APIKeyUsage, error)
+	usageByAPIKeyModel          func(ctx context.Context, apiKeyID string, since, until time.Time) ([]models.ModelStats, error)
 }
 
 func (m *mockStore) CreateProvider(ctx context.Context, p *models.Provider) error {
@@ -315,6 +316,12 @@ func (m *mockStore) UsageByAPIKey(ctx context.Context, since, until time.Time) (
 		return m.usageByAPIKey(ctx, since, until)
 	}
 	return nil, nil
+}
+func (m *mockStore) UsageByAPIKeyModel(ctx context.Context, apiKeyID string, since, until time.Time) ([]models.ModelStats, error) {
+	if m.usageByAPIKeyModel != nil {
+		return m.usageByAPIKeyModel(ctx, apiKeyID, since, until)
+	}
+	panic("unexpected call to UsageByAPIKeyModel")
 }
 func (m *mockStore) Close() error { return nil }
 
@@ -1166,7 +1173,8 @@ func TestHandleMyUsage_Unauthorized(t *testing.T) {
 	h := testAdminHandler(store, HandlerConfig{})
 
 	req := httptest.NewRequest(http.MethodGet, "/me/usage", nil)
-	rec := serve(h, req)
+	rec := httptest.NewRecorder()
+	h.HandleMyUsage(rec, req)
 
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("expected 401, got %d: %s", rec.Code, rec.Body.String())
@@ -1187,22 +1195,92 @@ func TestHandleMyUsage_OK(t *testing.T) {
 			{APIKeyID: "k2", APIKeyName: "other", RequestCount: 9, TotalTokens: 200, TotalCostUSD: 2.0},
 		}, nil
 	}
+	store.usageByAPIKeyModel = func(ctx context.Context, apiKeyID string, since, until time.Time) ([]models.ModelStats, error) {
+		if apiKeyID != "k1" {
+			t.Fatalf("expected api key id k1, got %q", apiKeyID)
+		}
+		return []models.ModelStats{
+			{Model: "gpt-4", RequestCount: 3, TotalTokens: 60, ErrorCount: 1, AvgLatencyMs: 250},
+			{Model: "gpt-3.5", RequestCount: 2, TotalTokens: 40, ErrorCount: 0, AvgLatencyMs: 150},
+		}, nil
+	}
 	h := testAdminHandler(store, HandlerConfig{})
 
 	req := httptest.NewRequest(http.MethodGet, "/me/usage?since=2026-01-01T00:00:00Z", nil)
 	req.Header.Set("Authorization", "Bearer testtoken")
-	rec := serve(h, req)
+	rec := httptest.NewRecorder()
+	h.HandleMyUsage(rec, req)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
 	}
 	var resp struct {
-		Usage models.APIKeyUsage `json:"usage"`
+		Usage  models.APIKeyUsage `json:"usage"`
+		ByModel []models.ModelStats `json:"by_model"`
 	}
 	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
 	if resp.Usage.APIKeyID != "k1" || resp.Usage.RequestCount != 5 {
 		t.Fatalf("unexpected usage: %+v", resp.Usage)
+	}
+	if len(resp.ByModel) != 2 || resp.ByModel[0].Model != "gpt-4" || resp.ByModel[0].RequestCount != 3 {
+		t.Fatalf("unexpected by_model: %+v", resp.ByModel)
+	}
+}
+
+func TestHandleMe(t *testing.T) {
+	adminKey := "secret-admin-key"
+	activeKey := "sk-active"
+	hash := proxy.HashKey(activeKey)
+	store := &mockStore{
+		getAPIKeyByHash: func(ctx context.Context, keyHash string) (*models.APIKey, error) {
+			if keyHash == hash {
+				return &models.APIKey{ID: "k1", Name: "my key", IsActive: true}, nil
+			}
+			return nil, nil
+		},
+	}
+	h := testAdminHandler(store, HandlerConfig{AccessKey: adminKey})
+
+	req := httptest.NewRequest(http.MethodGet, "/admin/me", nil)
+	req.Header.Set("X-Access-Key", adminKey)
+	rec := httptest.NewRecorder()
+	h.HandleMe(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 for admin, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var resp map[string]string
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp["role"] != "admin" {
+		t.Fatalf("expected role admin, got %+v", resp)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/admin/me", nil)
+	req.Header.Set("Authorization", "Bearer "+activeKey)
+	rec = httptest.NewRecorder()
+	h.HandleMe(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 for key, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var keyResp struct {
+		Role       string `json:"role"`
+		APIKeyID   string `json:"api_key_id"`
+		APIKeyName string `json:"api_key_name"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&keyResp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if keyResp.Role != "key" || keyResp.APIKeyID != "k1" || keyResp.APIKeyName != "my key" {
+		t.Fatalf("unexpected key scope: %+v", keyResp)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/admin/me", nil)
+	rec = httptest.NewRecorder()
+	h.HandleMe(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d: %s", rec.Code, rec.Body.String())
 	}
 }

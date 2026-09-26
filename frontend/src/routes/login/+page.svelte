@@ -25,7 +25,7 @@
         error = 'Invalid access key';
         return;
       }
-      api.setAccessKey(key);
+      await api.setAccessKey(key);
       await goto('/');
     } finally {
       loading = false;

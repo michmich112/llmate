@@ -9,6 +9,7 @@ e2e/screenshots/
 
 # Cucumber artifacts
 e2e/cucumber-report.html
+cucumber-e2e.log
 
 # Cucumber runtime tmp
 .cucumber/

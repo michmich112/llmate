@@ -140,18 +140,23 @@ func main() {
 	r.Get("/v1/models/{model}", proxyHandler.HandleGetModel)
 	r.Post("/api/show", proxyHandler.HandleShow)
 
+	// Admin-only API, protected by the ACCESS_KEY middleware. It is built as a
+	// separate router (middleware registered before routes, as chi requires)
+	// and mounted under /admin alongside the open auth/usage routes.
+	adminAPI := chi.NewRouter()
+	adminAPI.Use(auth.AccessKeyMiddleware(cfg.AccessKey))
+	adminAPI.Post("/providers/{id}/discover", onboardHandler.HandleDiscover)
+	adminAPI.Post("/providers/{id}/confirm", onboardHandler.HandleConfirm)
+	adminAPI.Mount("/", adminHandler.Routes())
+
 	r.Route("/admin", func(r chi.Router) {
 		// Open routes reachable with either an ACCESS_KEY or a valid API key.
-		// They are registered before the ACCESS_KEY middleware below so they are
-		// not gated to admin-only credentials.
 		r.Post("/auth", adminHandler.HandleAuth)
+		r.Get("/me", adminHandler.HandleMe)
 		r.Get("/me/usage", adminHandler.HandleMyUsage)
 
-		// Admin-only routes.
-		r.Use(auth.AccessKeyMiddleware(cfg.AccessKey))
-		r.Post("/providers/{id}/discover", onboardHandler.HandleDiscover)
-		r.Post("/providers/{id}/confirm", onboardHandler.HandleConfirm)
-		r.Mount("/", adminHandler.Routes())
+		// Admin-only routes live in a separate middleware-protected router.
+		r.Mount("/", adminAPI)
 	})
 
 	r.Post("/chat/completions", proxyHandler.RequireAPIKey(proxyHandler.HandleChatCompletions))
