@@ -9,7 +9,22 @@ async function adminHeaders(ctx) {
   return { Authorization: `Bearer ${ctx.authKey}` };
 }
 
+async function removeExistingKeyNamed(ctx, name) {
+  const want = name.trim().toLowerCase();
+  const keys = await listAdminKeys(ctx);
+  const matches = keys.filter((k) => (k.name || '').trim().toLowerCase() === want);
+  if (matches.length === 0) return;
+  const { execSync } = await import('node:child_process');
+  const DB = '/tmp/llmate-e2e.db';
+  for (const key of matches) {
+    const id = String(key.id).replace(/'/g, "''");
+    execSync(`sqlite3 "${DB}" "DELETE FROM request_logs WHERE api_key_id = '${id}';"`);
+    await deleteAdminKey(ctx, key.id);
+  }
+}
+
 async function createAdminKey(ctx, name, opts = {}) {
+  await removeExistingKeyNamed(ctx, name);
   const body = { name };
   if (opts.rpm !== undefined) body.rate_limit_rpm = opts.rpm;
   if (opts.tpm !== undefined) body.rate_limit_tpm = opts.tpm;
@@ -149,7 +164,16 @@ Then('the {string} API key appears in the keys table with RPM {int} and TPM {int
 
 When('I deactivate the {string} API key', async function (name) {
   const row = this.page.locator('tr').filter({ hasText: name });
-  await row.locator('[role="switch"]').click();
+  await row.getByRole('button', { name: `Actions for ${name}` }).click();
+  await this.page.getByRole('menuitem', { name: 'Update' }).click();
+  const dialog = this.page.locator('#edit-key-dialog');
+  await expect(dialog).toBeVisible();
+  const active = dialog.locator('#edit-active');
+  if (await active.isChecked()) {
+    await dialog.locator('label[role="switch"]:has(#edit-active)').click();
+  }
+  await dialog.getByRole('button', { name: 'Save' }).click();
+  await expect(dialog).toBeHidden();
 });
 
 Then('the {string} API key is inactive', async function (name) {
@@ -161,7 +185,31 @@ Then('the {string} API key is inactive', async function (name) {
 
 When('I delete the {string} API key', async function (name) {
   const row = this.page.locator('tr').filter({ hasText: name });
-  await row.getByRole('button', { name: 'Delete' }).click();
+  await row.getByRole('button', { name: `Actions for ${name}` }).click();
+  await this.page.getByRole('menuitem', { name: 'Delete' }).click();
+});
+
+When('I update the {string} API key to RPM {int} and TPM {int}', async function (name, rpm, tpm) {
+  const row = this.page.locator('tr').filter({ hasText: name });
+  await row.getByRole('button', { name: `Actions for ${name}` }).click();
+  await this.page.getByRole('menuitem', { name: 'Update' }).click();
+  const dialog = this.page.locator('#edit-key-dialog');
+  await expect(dialog).toBeVisible();
+  await dialog.locator('#edit-rpm').fill(String(rpm));
+  await dialog.locator('#edit-tpm').fill(String(tpm));
+  await dialog.getByRole('button', { name: 'Save' }).click();
+  await expect(dialog).toBeHidden();
+});
+
+When('I try to create an API key named {string} with RPM {string} and TPM {string}', async function (name, rpm, tpm) {
+  await this.page.locator('#key-name').fill(name);
+  await this.page.locator('#rpm').fill(String(rpm));
+  await this.page.locator('#tpm').fill(String(tpm));
+  await this.page.getByRole('button', { name: 'Create key' }).click();
+});
+
+Then('the keys table lists {string} once', async function (name) {
+  await expect(this.page.locator('tbody tr').filter({ hasText: name })).toHaveCount(1);
 });
 
 Then('no API key named {string} appears in the keys table', async function (name) {

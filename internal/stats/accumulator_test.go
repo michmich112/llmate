@@ -40,6 +40,39 @@ func TestAccumulator_ByModelUsesResolvedModel(t *testing.T) {
 	}
 }
 
+func TestAccumulator_ByAPIKey(t *testing.T) {
+	acc := NewAccumulator()
+	now := time.Now().UTC()
+	tokens := 8
+	acc.Record(&models.RequestLog{
+		Timestamp: now, StatusCode: 200, TotalTimeMs: 4,
+		APIKeyID: "k1", APIKeyName: "alice", TotalTokens: &tokens,
+	}, nil)
+	acc.Record(&models.RequestLog{
+		Timestamp: now, StatusCode: 500, TotalTimeMs: 6,
+		APIKeyID: "k1", APIKeyName: "alice", TotalTokens: &tokens,
+	}, nil)
+	acc.Record(&models.RequestLog{
+		Timestamp: now, StatusCode: 200, TotalTimeMs: 2,
+	}, nil)
+
+	stats := acc.DashboardStats(now.Add(-time.Hour))
+	if len(stats.ByAPIKey) != 2 {
+		t.Fatalf("ByAPIKey: got %+v", stats.ByAPIKey)
+	}
+	byName := map[string]models.APIKeyStats{}
+	for _, row := range stats.ByAPIKey {
+		byName[row.APIKeyName] = row
+	}
+	alice := byName["alice"]
+	if alice.RequestCount != 2 || alice.ErrorCount != 1 || alice.TotalTokens != 16 {
+		t.Fatalf("alice: %+v", alice)
+	}
+	if byName["No API key"].RequestCount != 1 {
+		t.Fatalf("unauthenticated: %+v", byName["No API key"])
+	}
+}
+
 func TestAccumulator_ByModelFallsBackToRequested(t *testing.T) {
 	acc := NewAccumulator()
 	now := time.Now().UTC()

@@ -296,7 +296,8 @@ class ApiClient {
       error_rate: data.error_rate ?? 0,
       active_requests: 0,
       by_model: data.by_model ?? [],
-      by_provider: []
+      by_provider: [],
+      by_api_key: []
     };
   }
 

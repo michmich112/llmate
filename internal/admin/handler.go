@@ -223,7 +223,8 @@ func (h *Handler) HandleCreateAPIKey(w http.ResponseWriter, r *http.Request) {
 		respondError(w, http.StatusBadRequest, "invalid JSON body")
 		return
 	}
-	if strings.TrimSpace(body.Name) == "" {
+	name := strings.TrimSpace(body.Name)
+	if name == "" {
 		respondError(w, http.StatusBadRequest, "name is required")
 		return
 	}
@@ -233,6 +234,13 @@ func (h *Handler) HandleCreateAPIKey(w http.ResponseWriter, r *http.Request) {
 	}
 	if body.RateLimitTPM != nil && *body.RateLimitTPM <= 0 {
 		respondError(w, http.StatusBadRequest, "rate_limit_tpm must be > 0")
+		return
+	}
+	if taken, err := h.apiKeyNameTaken(r, name, ""); err != nil {
+		respondError(w, http.StatusInternalServerError, "failed to create api key")
+		return
+	} else if taken {
+		respondError(w, http.StatusConflict, fmt.Sprintf("an API key named %q already exists", name))
 		return
 	}
 
@@ -247,7 +255,7 @@ func (h *Handler) HandleCreateAPIKey(w http.ResponseWriter, r *http.Request) {
 	k := models.APIKey{
 		ID:           uuid.NewString(),
 		KeyHash:      proxy.HashKey(rawKey),
-		Name:         body.Name,
+		Name:         name,
 		IsActive:     true,
 		RateLimitRPM: body.RateLimitRPM,
 		RateLimitTPM: body.RateLimitTPM,
@@ -275,7 +283,8 @@ func (h *Handler) HandleUpdateAPIKey(w http.ResponseWriter, r *http.Request) {
 		respondError(w, http.StatusBadRequest, "invalid JSON body")
 		return
 	}
-	if strings.TrimSpace(body.Name) == "" {
+	name := strings.TrimSpace(body.Name)
+	if name == "" {
 		respondError(w, http.StatusBadRequest, "name is required")
 		return
 	}
@@ -285,6 +294,13 @@ func (h *Handler) HandleUpdateAPIKey(w http.ResponseWriter, r *http.Request) {
 	}
 	if body.RateLimitTPM != nil && *body.RateLimitTPM <= 0 {
 		respondError(w, http.StatusBadRequest, "rate_limit_tpm must be > 0")
+		return
+	}
+	if taken, err := h.apiKeyNameTaken(r, name, id); err != nil {
+		respondError(w, http.StatusInternalServerError, "failed to update api key")
+		return
+	} else if taken {
+		respondError(w, http.StatusConflict, fmt.Sprintf("an API key named %q already exists", name))
 		return
 	}
 
@@ -299,7 +315,7 @@ func (h *Handler) HandleUpdateAPIKey(w http.ResponseWriter, r *http.Request) {
 	}
 
 	merged := *existing
-	merged.Name = body.Name
+	merged.Name = name
 	if body.IsActive != nil {
 		merged.IsActive = *body.IsActive
 	}
@@ -311,6 +327,24 @@ func (h *Handler) HandleUpdateAPIKey(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	respondJSON(w, http.StatusOK, map[string]interface{}{"api_key": merged})
+}
+
+// apiKeyNameTaken reports whether another key already uses name, ignoring case.
+func (h *Handler) apiKeyNameTaken(r *http.Request, name, excludeID string) (bool, error) {
+	keys, err := h.store.ListAPIKeys(r.Context())
+	if err != nil {
+		return false, err
+	}
+	want := strings.ToLower(name)
+	for _, k := range keys {
+		if k.ID == excludeID {
+			continue
+		}
+		if strings.ToLower(strings.TrimSpace(k.Name)) == want {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // HandleDeleteAPIKey removes an API key by ID.

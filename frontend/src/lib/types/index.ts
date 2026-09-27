@@ -106,6 +106,16 @@ export interface DashboardStats {
   active_requests: number;
   by_model: ModelStats[];
   by_provider: ProviderStats[];
+  by_api_key: APIKeyStats[];
+}
+
+export interface APIKeyStats {
+  api_key_id: string;
+  api_key_name: string;
+  request_count: number;
+  avg_latency_ms: number;
+  error_count: number;
+  total_tokens: number;
 }
 
 export interface ActiveRequest {

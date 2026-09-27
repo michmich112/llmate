@@ -11,6 +11,30 @@ Feature: API key management, gateway auth, and rate limits
     When I delete the "dev-key" API key
     Then no API key named "dev-key" appears in the keys table
 
+  Scenario: Admin updates RPM and TPM for an existing API key
+    Given I log in to the dashboard as an admin
+    When I open the API keys page
+    And I create an API key named "edit-key" with RPM 10 and TPM 1000
+    Then I see the raw API key shown once
+    When I update the "edit-key" API key to RPM 25 and TPM 5000
+    Then the "edit-key" API key appears in the keys table with RPM 25 and TPM 5000
+
+  Scenario: Creating an API key with a name that already exists is rejected
+    Given I log in to the dashboard as an admin
+    When I open the API keys page
+    And I create an API key named "dup-key" with RPM 5 and TPM 100
+    Then I see the raw API key shown once
+    When I create an API key named "dup-key" with RPM 5 and TPM 100
+    Then I see the text "already exists"
+    And the keys table lists "dup-key" once
+
+  Scenario: RPM and TPM fields reject input that is not a whole number
+    Given I log in to the dashboard as an admin
+    When I open the API keys page
+    And I try to create an API key named "bad-key" with RPM "abc" and TPM "10x"
+    Then I see the text "whole numbers"
+    And no API key named "bad-key" appears in the keys table
+
   Scenario: Gateway rejects requests with missing or invalid API keys
     Given I create an active API key via the admin API named "gateway-key"
     And the admin requires API keys

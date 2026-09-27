@@ -49,6 +49,7 @@ func (s *SQLiteStore) dashboardStats(ctx context.Context, since, until time.Time
 	stats := &models.DashboardStats{
 		ByModel:    []models.ModelStats{},
 		ByProvider: []models.ProviderStats{},
+		ByAPIKey:   []models.APIKeyStats{},
 	}
 
 	clause := "timestamp >= ? AND timestamp <= ?"
@@ -154,6 +155,43 @@ func (s *SQLiteStore) dashboardStats(ctx context.Context, since, until time.Time
 	}
 	if err := provRows.Err(); err != nil {
 		return nil, fmt.Errorf("dashboard stats by provider rows: %w", err)
+	}
+
+	keyRows, err := s.db.QueryContext(ctx, `
+		SELECT
+			COALESCE(r.api_key_id, '') AS api_key_id,
+			CASE
+				WHEN COALESCE(r.api_key_id, '') = '' THEN 'No API key'
+				ELSE COALESCE(NULLIF(k.name, ''), NULLIF(r.api_key_name, ''), r.api_key_id)
+			END AS api_key_name,
+			COUNT(*) AS request_count,
+			AVG(CAST(r.total_time_ms AS REAL)) AS avg_latency_ms,
+			SUM(CASE WHEN r.status_code >= 400 THEN 1 ELSE 0 END) AS error_count,
+			COALESCE(SUM(COALESCE(r.total_tokens, 0)), 0) AS total_tokens
+		FROM request_logs r
+		LEFT JOIN api_keys k ON k.id = r.api_key_id
+		WHERE r.timestamp >= ? AND r.timestamp <= ?
+		GROUP BY COALESCE(r.api_key_id, '')
+		ORDER BY request_count DESC
+	`, since, until)
+	if err != nil {
+		return nil, fmt.Errorf("dashboard stats by api key: %w", err)
+	}
+	defer keyRows.Close()
+
+	for keyRows.Next() {
+		var ks models.APIKeyStats
+		var avgLatency sql.NullFloat64
+		if err := keyRows.Scan(&ks.APIKeyID, &ks.APIKeyName, &ks.RequestCount, &avgLatency, &ks.ErrorCount, &ks.TotalTokens); err != nil {
+			return nil, fmt.Errorf("dashboard stats by api key scan: %w", err)
+		}
+		if avgLatency.Valid {
+			ks.AvgLatencyMs = avgLatency.Float64
+		}
+		stats.ByAPIKey = append(stats.ByAPIKey, ks)
+	}
+	if err := keyRows.Err(); err != nil {
+		return nil, fmt.Errorf("dashboard stats by api key rows: %w", err)
 	}
 
 	return stats, nil

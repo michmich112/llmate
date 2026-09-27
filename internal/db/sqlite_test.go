@@ -766,6 +766,12 @@ func TestDashboardStats(t *testing.T) {
 	if empty.ByProvider == nil {
 		t.Error("ByProvider should not be nil (must be empty slice)")
 	}
+	if empty.ByAPIKey == nil {
+		t.Error("ByAPIKey should not be nil (must be empty slice)")
+	}
+	if len(stats.ByAPIKey) != 1 || stats.ByAPIKey[0].APIKeyName != "No API key" || stats.ByAPIKey[0].RequestCount != 5 {
+		t.Errorf("ByAPIKey: got %+v", stats.ByAPIKey)
+	}
 }
 
 func TestDashboardStats_GroupsByResolvedModel(t *testing.T) {
@@ -1347,6 +1353,24 @@ func TestGetDashboardStatsForAPIKeyOmitsOtherKeysAndProviders(t *testing.T) {
 	}
 	if len(stats.ByProvider) != 0 {
 		t.Fatalf("key stats must not include providers, got %+v", stats.ByProvider)
+	}
+	if len(stats.ByAPIKey) != 0 {
+		t.Fatalf("key stats must not include the API key breakdown, got %+v", stats.ByAPIKey)
+	}
+
+	admin, err := store.GetDashboardStats(ctx, now.Add(-10*time.Minute), now.Add(time.Minute))
+	if err != nil {
+		t.Fatalf("GetDashboardStats: %v", err)
+	}
+	if len(admin.ByAPIKey) != 2 {
+		t.Fatalf("ByAPIKey: got %+v", admin.ByAPIKey)
+	}
+	counts := map[string]int{}
+	for _, row := range admin.ByAPIKey {
+		counts[row.APIKeyName] = row.RequestCount
+	}
+	if counts["one"] != 1 || counts["two"] != 1 {
+		t.Fatalf("ByAPIKey counts: %+v", counts)
 	}
 }
 

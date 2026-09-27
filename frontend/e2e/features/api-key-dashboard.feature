@@ -21,12 +21,14 @@ Feature: API-key user dashboard and access control
     Given I create an active API key via the admin API named "user-key"
     When I request my dashboard stats with the "user-key" API key
     Then the dashboard stats omit provider fields
+    And the dashboard stats omit the API key breakdown
 
   Scenario: API-key user does not see provider information
     Given I create an active API key via the admin API named "user-key"
     When I log in to the dashboard using the "user-key" API key
     Then I land on the usage dashboard
     And I do not see provider information
+    And I do not see the "Requests by API Key" table
 
   Scenario: Admin opening /usage lands on the dashboard
     Given I log in to the dashboard as an admin
@@ -63,6 +65,18 @@ Feature: API-key user dashboard and access control
     When I log in to the dashboard using the "bob" API key
     Then I land on the usage dashboard
     And I see the Requests metric shows 3
+
+  Scenario: Admin sees requests broken down by API key
+    Given I log in to the dashboard as an admin
+    And I create an active API key via the admin API named "dash-alice"
+    And I seed request logs for the API key named "dash-alice" with 5 requests over the last 6 hours
+    And I create an active API key via the admin API named "dash-bob"
+    And I seed request logs for the API key named "dash-bob" with 3 requests over the last 6 hours
+    When I open the dashboard
+    And I select the "Lifetime" dashboard range
+    Then I see the "Requests by API Key" table
+    And the API key breakdown includes "dash-alice" with 5 requests
+    And the API key breakdown includes "dash-bob" with 3 requests
 
   Scenario: Admin sees usage across all API keys
     Given I create an active API key via the admin API named "alice"

@@ -20,6 +20,33 @@
   let requireAPIKeys = $state(false);
   let configReady = $state(false);
   let requireSaving = $state(false);
+  let openMenuId = $state<string | null>(null);
+  let editing = $state<APIKey | null>(null);
+  let editName = $state('');
+  let editRPM = $state('');
+  let editTPM = $state('');
+  let editActive = $state(true);
+  let editSaving = $state(false);
+  let editDialog = $state<HTMLDialogElement | null>(null);
+
+  function limitError(rpmRaw: string, tpmRaw: string): string | null {
+    const ok = (value: string) => value === '' || /^[1-9]\d*$/.test(value);
+    if (!ok(rpmRaw.trim()) || !ok(tpmRaw.trim())) {
+      return 'RPM and TPM must be whole numbers greater than 0, or left blank';
+    }
+    return null;
+  }
+
+  function limitValue(raw: string): number | undefined {
+    const value = raw.trim();
+    if (!value) return undefined;
+    return Number(value);
+  }
+
+  function nameTaken(name: string, excludeId?: string): boolean {
+    const want = name.trim().toLowerCase();
+    return keys.some((key) => key.id !== excludeId && key.name.trim().toLowerCase() === want);
+  }
 
   onMount(async () => {
     loading = true;
@@ -69,14 +96,23 @@
       error = 'Name is required';
       return;
     }
+    const limitsMessage = limitError(rateLimitRPM, rateLimitTPM);
+    if (limitsMessage) {
+      error = limitsMessage;
+      return;
+    }
+    if (nameTaken(trimmed)) {
+      error = `an API key named "${trimmed}" already exists`;
+      return;
+    }
     saving = true;
     error = null;
     try {
       const input: APIKeyCreateInput = { name: trimmed };
-      const rpm = parseInt(rateLimitRPM, 10);
-      const tpm = parseInt(rateLimitTPM, 10);
-      if (!Number.isNaN(rpm) && rpm > 0) input.rate_limit_rpm = rpm;
-      if (!Number.isNaN(tpm) && tpm > 0) input.rate_limit_tpm = tpm;
+      const rpm = limitValue(rateLimitRPM);
+      const tpm = limitValue(rateLimitTPM);
+      if (rpm !== undefined) input.rate_limit_rpm = rpm;
+      if (tpm !== undefined) input.rate_limit_tpm = tpm;
       const created = await api.createAPIKey(input);
       keys = [created.api_key, ...keys];
       showKey = created.key;
@@ -91,18 +127,54 @@
     }
   }
 
-  async function handleToggle(key: APIKey, isActive: boolean) {
+  function openEdit(key: APIKey) {
+    editing = key;
+    editName = key.name;
+    editRPM = key.rate_limit_rpm != null ? String(key.rate_limit_rpm) : '';
+    editTPM = key.rate_limit_tpm != null ? String(key.rate_limit_tpm) : '';
+    editActive = key.is_active;
+    openMenuId = null;
+    editDialog?.showModal();
+  }
+
+  function closeEdit() {
+    editDialog?.close();
+    editing = null;
+  }
+
+  async function handleSaveEdit() {
+    if (!editing) return;
+    const trimmed = editName.trim();
+    if (!trimmed) {
+      error = 'Name is required';
+      return;
+    }
+    const limitsMessage = limitError(editRPM, editTPM);
+    if (limitsMessage) {
+      error = limitsMessage;
+      return;
+    }
+    if (nameTaken(trimmed, editing.id)) {
+      error = `an API key named "${trimmed}" already exists`;
+      return;
+    }
+    editSaving = true;
     error = null;
     try {
-      const updated = await api.updateAPIKey(key.id, {
-        name: key.name,
-        is_active: isActive,
-        ...(key.rate_limit_rpm != null ? { rate_limit_rpm: key.rate_limit_rpm } : {}),
-        ...(key.rate_limit_tpm != null ? { rate_limit_tpm: key.rate_limit_tpm } : {})
+      const rpm = limitValue(editRPM);
+      const tpm = limitValue(editTPM);
+      const updated = await api.updateAPIKey(editing.id, {
+        name: trimmed,
+        is_active: editActive,
+        ...(rpm !== undefined ? { rate_limit_rpm: rpm } : {}),
+        ...(tpm !== undefined ? { rate_limit_tpm: tpm } : {})
       });
-      keys = keys.map((k) => (k.id === key.id ? updated : k));
+      keys = keys.map((k) => (k.id === updated.id ? updated : k));
+      closeEdit();
     } catch (e) {
       error = e instanceof Error ? e.message : 'Failed to update API key';
+    } finally {
+      editSaving = false;
     }
   }
 
@@ -166,11 +238,11 @@
         <div class="grid gap-4 sm:grid-cols-2">
           <div class="space-y-2">
             <label for="rpm" class="text-sm font-medium leading-none">Rate limit (RPM)</label>
-            <Input id="rpm" bind:value={rateLimitRPM} placeholder="Optional" type="number" />
+            <Input id="rpm" bind:value={rateLimitRPM} placeholder="Optional" type="text" inputmode="numeric" />
           </div>
           <div class="space-y-2">
             <label for="tpm" class="text-sm font-medium leading-none">Rate limit (TPM)</label>
-            <Input id="tpm" bind:value={rateLimitTPM} placeholder="Optional" type="number" />
+            <Input id="tpm" bind:value={rateLimitTPM} placeholder="Optional" type="text" inputmode="numeric" />
           </div>
         </div>
         <Button onclick={handleCreate} disabled={saving || loading}>
@@ -226,20 +298,44 @@
                 <td class="px-4 py-3 text-muted-foreground">{formatDate(key.created_at)}</td>
                 <td class="px-4 py-3 text-muted-foreground">{key.rate_limit_rpm ?? '—'}</td>
                 <td class="px-4 py-3 text-muted-foreground">{key.rate_limit_tpm ?? '—'}</td>
-                <td class="px-4 py-3">
-                  <Switch
-                    checked={key.is_active}
-                    onCheckedChange={(v: boolean) => handleToggle(key, v)}
-                  />
-                </td>
-                <td class="px-4 py-3">
+                <td class="px-4 py-3 text-muted-foreground">{key.is_active ? 'Active' : 'Inactive'}</td>
+                <td class="relative px-4 py-3">
                   <Button
-                    variant="destructive"
-                    size="sm"
-                    onclick={() => handleDelete(key.id)}
+                    variant="ghost"
+                    size="icon"
+                    aria-label={`Actions for ${key.name}`}
+                    aria-haspopup="menu"
+                    aria-expanded={openMenuId === key.id}
+                    onclick={() => (openMenuId = openMenuId === key.id ? null : key.id)}
                   >
-                    Delete
+                    ⋮
                   </Button>
+                  {#if openMenuId === key.id}
+                    <div
+                      role="menu"
+                      class="absolute right-4 z-20 mt-1 w-36 rounded-md border bg-background p-1 shadow-md"
+                    >
+                      <button
+                        type="button"
+                        role="menuitem"
+                        class="flex w-full rounded-sm px-3 py-2 text-left text-sm hover:bg-accent"
+                        onclick={() => openEdit(key)}
+                      >
+                        Update
+                      </button>
+                      <button
+                        type="button"
+                        role="menuitem"
+                        class="flex w-full rounded-sm px-3 py-2 text-left text-sm text-destructive hover:bg-accent"
+                        onclick={() => {
+                          openMenuId = null;
+                          handleDelete(key.id);
+                        }}
+                      >
+                        Delete
+                      </button>
+                    </div>
+                  {/if}
                 </td>
               </tr>
             {/each}
@@ -249,3 +345,38 @@
     </CardContent>
   </Card>
 </div>
+
+<dialog
+  id="edit-key-dialog"
+  bind:this={editDialog}
+  class="w-full max-w-md rounded-lg border border-border bg-background p-6 shadow-lg backdrop:bg-black/50"
+  aria-labelledby="edit-key-title"
+>
+  <h3 id="edit-key-title" class="text-lg font-semibold">Update API key</h3>
+  <div class="mt-4 space-y-4">
+    <div class="space-y-2">
+      <label for="edit-key-name" class="text-sm font-medium leading-none">Name</label>
+      <Input id="edit-key-name" bind:value={editName} />
+    </div>
+    <div class="grid gap-4 sm:grid-cols-2">
+      <div class="space-y-2">
+        <label for="edit-rpm" class="text-sm font-medium leading-none">Rate limit (RPM)</label>
+        <Input id="edit-rpm" bind:value={editRPM} placeholder="Optional" type="text" inputmode="numeric" />
+      </div>
+      <div class="space-y-2">
+        <label for="edit-tpm" class="text-sm font-medium leading-none">Rate limit (TPM)</label>
+        <Input id="edit-tpm" bind:value={editTPM} placeholder="Optional" type="text" inputmode="numeric" />
+      </div>
+    </div>
+    <div class="flex items-center justify-between">
+      <label for="edit-active" class="text-sm font-medium leading-none">Active</label>
+      <Switch id="edit-active" checked={editActive} onCheckedChange={(v: boolean) => (editActive = v)} />
+    </div>
+  </div>
+  <div class="mt-6 flex justify-end gap-2">
+    <Button variant="outline" type="button" onclick={closeEdit}>Cancel</Button>
+    <Button type="button" onclick={handleSaveEdit} disabled={editSaving}>
+      {editSaving ? 'Saving…' : 'Save'}
+    </Button>
+  </div>
+</dialog>

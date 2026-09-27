@@ -18,7 +18,8 @@
     error_rate: 0,
     active_requests: 0,
     by_model: [],
-    by_provider: []
+    by_provider: [],
+    by_api_key: []
   });
 
   let stats = $state<DashboardStats | null>(null);
@@ -694,6 +695,46 @@
           {/if}
         </CardContent>
       </Card>
+      {/if}
+
+      {#if !isKeyUser}
+        <Card data-testid="requests-by-api-key" class="lg:col-span-2">
+          <CardHeader>
+            <CardTitle>Requests by API Key</CardTitle>
+          </CardHeader>
+          <CardContent class="p-0">
+            {#if (stats.by_api_key ?? []).length === 0}
+              <p class="px-6 py-4 text-sm text-muted-foreground">No data yet.</p>
+            {:else}
+              <div class="overflow-x-auto">
+                <table class="w-full text-sm">
+                  <thead>
+                    <tr class="border-b bg-muted/50 text-left text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                      <th class="px-4 py-3">API Key</th>
+                      <th class="px-4 py-3 text-right">Requests</th>
+                      <th class="px-4 py-3 text-right">Avg Latency</th>
+                      <th class="px-4 py-3 text-right">Errors</th>
+                      <th class="px-4 py-3 text-right">Tokens</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {#each stats.by_api_key as row (row.api_key_id || row.api_key_name)}
+                      <tr class="border-b last:border-0 hover:bg-muted/30">
+                        <td class="max-w-[180px] px-4 py-3 font-medium" title={row.api_key_name}>
+                          <div class="truncate">{row.api_key_name}</div>
+                        </td>
+                        <td class="px-4 py-3 text-right">{row.request_count.toLocaleString()}</td>
+                        <td class="px-4 py-3 text-right">{row.avg_latency_ms.toFixed(0)}ms</td>
+                        <td class="px-4 py-3 text-right">{row.error_count}</td>
+                        <td class="px-4 py-3 text-right">{row.total_tokens.toLocaleString()}</td>
+                      </tr>
+                    {/each}
+                  </tbody>
+                </table>
+              </div>
+            {/if}
+          </CardContent>
+        </Card>
       {/if}
     </div>
   {:else if !loading && !error}

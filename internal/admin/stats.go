@@ -89,12 +89,16 @@ func (h *Handler) HandleGetStats(w http.ResponseWriter, r *http.Request) {
 		stats = h.statsAcc.DashboardStats(since)
 	}
 
+	if stats.ByAPIKey == nil {
+		stats.ByAPIKey = []models.APIKeyStats{}
+	}
 	resp := map[string]interface{}{
-		"total_requests": stats.TotalRequests,
-		"avg_latency_ms": stats.AvgLatencyMs,
-		"error_rate":     stats.ErrorRate,
-		"by_model":       stats.ByModel,
-		"by_provider":    stats.ByProvider,
+		"total_requests":  stats.TotalRequests,
+		"avg_latency_ms":  stats.AvgLatencyMs,
+		"error_rate":      stats.ErrorRate,
+		"by_model":        stats.ByModel,
+		"by_provider":     stats.ByProvider,
+		"by_api_key":      stats.ByAPIKey,
 		"active_requests": proxy.ActiveCount(h.active),
 	}
 	if !useDB && h.statsAcc.Backfilling() {

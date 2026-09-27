@@ -50,6 +50,32 @@ Then('the dashboard stats omit provider fields', async function () {
   expect(Array.isArray(this.myStats.by_model)).toBe(true);
 });
 
+Then('the dashboard stats omit the API key breakdown', async function () {
+  expect(this.myStats).toBeTruthy();
+  expect(this.myStats.by_api_key).toBeUndefined();
+});
+
+Then('I do not see the {string} table', async function (heading) {
+  await expect(this.page.getByText(heading, { exact: true })).toHaveCount(0);
+});
+
+When('I open the dashboard', async function () {
+  await this.page.goto(`${ROOT}/`);
+  await this.page.waitForLoadState('networkidle');
+});
+
+When('I select the {string} dashboard range', async function (label) {
+  await this.page.getByRole('button', { name: label, exact: true }).click();
+  await this.page.waitForLoadState('networkidle');
+});
+
+Then('the API key breakdown includes {string} with {int} requests', async function (name, count) {
+  const card = this.page.locator('[data-testid="requests-by-api-key"]');
+  const row = card.locator('tr').filter({ hasText: name });
+  await expect(row).toBeVisible();
+  await expect(row.getByText(String(count), { exact: true })).toBeVisible();
+});
+
 Then('I see provider information', async function () {
   await expect(this.page.locator('[data-testid="requests-by-provider"]')).toBeVisible();
 });

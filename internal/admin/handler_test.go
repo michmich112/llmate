@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -11,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/llmate/gateway/internal/db"
 	"github.com/llmate/gateway/internal/models"
 	"github.com/llmate/gateway/internal/proxy"
 	"github.com/llmate/gateway/internal/stats"
@@ -20,48 +22,48 @@ import (
 // Methods that are not needed by a specific test can be left nil;
 // they panic with "unexpected call" to surface unintended invocations.
 type mockStore struct {
-	createProvider              func(ctx context.Context, p *models.Provider) error
-	getProvider                 func(ctx context.Context, id string) (*models.Provider, error)
-	listProviders               func(ctx context.Context) ([]models.Provider, error)
-	updateProvider              func(ctx context.Context, p *models.Provider) error
-	deleteProvider              func(ctx context.Context, id string) error
-	upsertProviderEndpoints     func(ctx context.Context, providerID string, eps []models.ProviderEndpoint) error
-	listProviderEndpoints       func(ctx context.Context, providerID string) ([]models.ProviderEndpoint, error)
-	updateProviderEndpoint      func(ctx context.Context, ep *models.ProviderEndpoint) error
-	syncProviderModels          func(ctx context.Context, providerID string, modelIDs []string) error
-	createProviderModel         func(ctx context.Context, m *models.ProviderModel) error
-	deleteProviderModel              func(ctx context.Context, providerID, recordID string) error
-	setProviderModelsAvailability    func(ctx context.Context, providerID string, availableModelIDs []string) error
-	updateProviderModelAvailability  func(ctx context.Context, providerID, recordID string, available bool) error
-	listProviderModels               func(ctx context.Context, providerID string) ([]models.ProviderModel, error)
-	listAllModels               func(ctx context.Context) ([]models.ProviderModel, error)
-	createAlias                 func(ctx context.Context, a *models.ModelAlias) error
-	listAliases                 func(ctx context.Context) ([]models.ModelAlias, error)
-	updateAlias                 func(ctx context.Context, a *models.ModelAlias) error
-	deleteAlias                 func(ctx context.Context, id string) error
-	resolveAlias                func(ctx context.Context, alias string) ([]models.ModelAlias, error)
-	getHealthyProvidersForModel func(ctx context.Context, modelID string) ([]models.Provider, error)
-	getEnabledEndpoint          func(ctx context.Context, providerID string, path string) (*models.ProviderEndpoint, error)
-	insertRequestLog            func(ctx context.Context, log *models.RequestLog) error
-	queryRequestLogs            func(ctx context.Context, filter models.LogFilter) ([]models.RequestLog, int, error)
-	getRequestLog               func(ctx context.Context, id string) (*models.RequestLog, error)
-	updateProviderModelCosts    func(ctx context.Context, id string, m *models.ProviderModel) error
-	getProviderModelCosts       func(ctx context.Context, providerID, modelID string) (*models.ProviderModel, error)
-	getDashboardStats           func(ctx context.Context, since, until time.Time) (*models.DashboardStats, error)
-	getDashboardStatsForAPIKey  func(ctx context.Context, apiKeyID string, since, until time.Time) (*models.DashboardStats, error)
-	getTimeSeries               func(ctx context.Context, since, until time.Time, granularity string) ([]models.TimeSeriesPoint, error)
-	timeSeriesByAPIKey          func(ctx context.Context, apiKeyID string, since, until time.Time, granularity string) ([]models.TimeSeriesPoint, error)
-	getLifetimeCost             func(ctx context.Context) (*models.LifetimeCost, error)
-	getLifetimeCostForAPIKey    func(ctx context.Context, apiKeyID string) (*models.LifetimeCost, error)
-	updateProviderHealth        func(ctx context.Context, id string, healthy bool) error
-	createAPIKey                func(ctx context.Context, k *models.APIKey) error
-	getAPIKeyByHash             func(ctx context.Context, keyHash string) (*models.APIKey, error)
-	getAPIKey                   func(ctx context.Context, id string) (*models.APIKey, error)
-	listAPIKeys                 func(ctx context.Context) ([]models.APIKey, error)
-	updateAPIKey                func(ctx context.Context, k *models.APIKey) error
-	deleteAPIKey                func(ctx context.Context, id string) error
-	usageByAPIKey               func(ctx context.Context, since, until time.Time) ([]models.APIKeyUsage, error)
-	usageByAPIKeyModel          func(ctx context.Context, apiKeyID string, since, until time.Time) ([]models.ModelStats, error)
+	createProvider                  func(ctx context.Context, p *models.Provider) error
+	getProvider                     func(ctx context.Context, id string) (*models.Provider, error)
+	listProviders                   func(ctx context.Context) ([]models.Provider, error)
+	updateProvider                  func(ctx context.Context, p *models.Provider) error
+	deleteProvider                  func(ctx context.Context, id string) error
+	upsertProviderEndpoints         func(ctx context.Context, providerID string, eps []models.ProviderEndpoint) error
+	listProviderEndpoints           func(ctx context.Context, providerID string) ([]models.ProviderEndpoint, error)
+	updateProviderEndpoint          func(ctx context.Context, ep *models.ProviderEndpoint) error
+	syncProviderModels              func(ctx context.Context, providerID string, modelIDs []string) error
+	createProviderModel             func(ctx context.Context, m *models.ProviderModel) error
+	deleteProviderModel             func(ctx context.Context, providerID, recordID string) error
+	setProviderModelsAvailability   func(ctx context.Context, providerID string, availableModelIDs []string) error
+	updateProviderModelAvailability func(ctx context.Context, providerID, recordID string, available bool) error
+	listProviderModels              func(ctx context.Context, providerID string) ([]models.ProviderModel, error)
+	listAllModels                   func(ctx context.Context) ([]models.ProviderModel, error)
+	createAlias                     func(ctx context.Context, a *models.ModelAlias) error
+	listAliases                     func(ctx context.Context) ([]models.ModelAlias, error)
+	updateAlias                     func(ctx context.Context, a *models.ModelAlias) error
+	deleteAlias                     func(ctx context.Context, id string) error
+	resolveAlias                    func(ctx context.Context, alias string) ([]models.ModelAlias, error)
+	getHealthyProvidersForModel     func(ctx context.Context, modelID string) ([]models.Provider, error)
+	getEnabledEndpoint              func(ctx context.Context, providerID string, path string) (*models.ProviderEndpoint, error)
+	insertRequestLog                func(ctx context.Context, log *models.RequestLog) error
+	queryRequestLogs                func(ctx context.Context, filter models.LogFilter) ([]models.RequestLog, int, error)
+	getRequestLog                   func(ctx context.Context, id string) (*models.RequestLog, error)
+	updateProviderModelCosts        func(ctx context.Context, id string, m *models.ProviderModel) error
+	getProviderModelCosts           func(ctx context.Context, providerID, modelID string) (*models.ProviderModel, error)
+	getDashboardStats               func(ctx context.Context, since, until time.Time) (*models.DashboardStats, error)
+	getDashboardStatsForAPIKey      func(ctx context.Context, apiKeyID string, since, until time.Time) (*models.DashboardStats, error)
+	getTimeSeries                   func(ctx context.Context, since, until time.Time, granularity string) ([]models.TimeSeriesPoint, error)
+	timeSeriesByAPIKey              func(ctx context.Context, apiKeyID string, since, until time.Time, granularity string) ([]models.TimeSeriesPoint, error)
+	getLifetimeCost                 func(ctx context.Context) (*models.LifetimeCost, error)
+	getLifetimeCostForAPIKey        func(ctx context.Context, apiKeyID string) (*models.LifetimeCost, error)
+	updateProviderHealth            func(ctx context.Context, id string, healthy bool) error
+	createAPIKey                    func(ctx context.Context, k *models.APIKey) error
+	getAPIKeyByHash                 func(ctx context.Context, keyHash string) (*models.APIKey, error)
+	getAPIKey                       func(ctx context.Context, id string) (*models.APIKey, error)
+	listAPIKeys                     func(ctx context.Context) ([]models.APIKey, error)
+	updateAPIKey                    func(ctx context.Context, k *models.APIKey) error
+	deleteAPIKey                    func(ctx context.Context, id string) error
+	usageByAPIKey                   func(ctx context.Context, since, until time.Time) ([]models.APIKeyUsage, error)
+	usageByAPIKeyModel              func(ctx context.Context, apiKeyID string, since, until time.Time) ([]models.ModelStats, error)
 }
 
 func (m *mockStore) CreateProvider(ctx context.Context, p *models.Provider) error {
@@ -289,7 +291,9 @@ func (m *mockStore) PurgeRequestLogRequestBodiesOlderThan(_ context.Context, _ t
 func (m *mockStore) PurgeRequestLogResponseBodiesOlderThan(_ context.Context, _ time.Time) (int64, error) {
 	return 0, nil
 }
-func (m *mockStore) LoadRoutingData(_ context.Context) (*models.RoutingData, error) { return &models.RoutingData{}, nil }
+func (m *mockStore) LoadRoutingData(_ context.Context) (*models.RoutingData, error) {
+	return &models.RoutingData{}, nil
+}
 func (m *mockStore) CreateAPIKey(ctx context.Context, k *models.APIKey) error {
 	if m.createAPIKey != nil {
 		return m.createAPIKey(ctx, k)
@@ -357,7 +361,6 @@ func serve(h *Handler, req *http.Request) *httptest.ResponseRecorder {
 // Provider tests
 // ------------------------------------------------------------------
 
-
 func testAdminHandler(store *mockStore, cfg HandlerConfig) *Handler {
 	acc := stats.NewAccumulator()
 	qw := NewQueryWorker(store, 4)
@@ -388,7 +391,7 @@ func TestHandleActive(t *testing.T) {
 		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
 	}
 	var resp struct {
-		Active   int                  `json:"active"`
+		Active   int                   `json:"active"`
 		Requests []proxy.ActiveRequest `json:"requests"`
 	}
 	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
@@ -1121,6 +1124,40 @@ func TestHandleCreateAPIKey(t *testing.T) {
 	}
 }
 
+func TestHandleCreateAPIKey_DuplicateName(t *testing.T) {
+	store, err := db.NewSQLiteStore(":memory:")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	t.Cleanup(func() { store.Close() })
+	h := testAdminHandlerReal(store, HandlerConfig{})
+
+	post := func(name string) *httptest.ResponseRecorder {
+		t.Helper()
+		body := fmt.Sprintf(`{"name":%q}`, name)
+		req := httptest.NewRequest(http.MethodPost, "/keys", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		return serve(h, req)
+	}
+
+	if rec := post("dup"); rec.Code != http.StatusCreated {
+		t.Fatalf("first create: %d %s", rec.Code, rec.Body.String())
+	}
+	rec := post("DUP")
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("duplicate: %d %s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Error string `json:"error"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(resp.Error, "already exists") {
+		t.Fatalf("error: %q", resp.Error)
+	}
+}
+
 func TestHandleCreateAPIKey_MissingName(t *testing.T) {
 	h := testAdminHandler(&mockStore{}, HandlerConfig{})
 
@@ -1250,6 +1287,9 @@ func TestHandleMyStats_OmitsProvider(t *testing.T) {
 	if _, ok := raw["by_provider"]; ok {
 		t.Fatalf("key stats must omit by_provider: %v", raw)
 	}
+	if _, ok := raw["by_api_key"]; ok {
+		t.Fatalf("key stats must omit by_api_key: %v", raw)
+	}
 	if _, ok := raw["active_requests"]; ok {
 		t.Fatalf("key stats must omit active_requests: %v", raw)
 	}
@@ -1350,7 +1390,7 @@ func TestHandleMyUsage_OK(t *testing.T) {
 		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
 	}
 	var resp struct {
-		Usage  models.APIKeyUsage `json:"usage"`
+		Usage   models.APIKeyUsage  `json:"usage"`
 		ByModel []models.ModelStats `json:"by_model"`
 	}
 	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
