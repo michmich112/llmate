@@ -216,8 +216,17 @@ func parseUsageFromBody(body []byte) *usageOnly {
 	return &u
 }
 
+// copyResponseHeaders copies non-hop-by-hop response headers from upstream to w.
+// Body-derived headers that would become stale if the body is rewritten are dropped:
+// Content-Length is recomputed from the actual body by copyResponseHeadersAndWrite,
+// and ETag/Content-MD5 are body digests that can never be copied verbatim.
 func copyResponseHeaders(w http.ResponseWriter, resp *http.Response) {
 	for key, values := range resp.Header {
+		switch strings.ToLower(key) {
+		case "content-length", "etag", "content-md5":
+			// Derived from the response body; the caller recomputes/strips these.
+			continue
+		}
 		if hopByHopHeaders[strings.ToLower(key)] {
 			continue
 		}
@@ -225,6 +234,16 @@ func copyResponseHeaders(w http.ResponseWriter, resp *http.Response) {
 			w.Header().Add(key, v)
 		}
 	}
+}
+
+// copyResponseHeadersAndWrite copies upstream headers and writes body with a
+// Content-Length derived from the actual body, so the declared length can never
+// mismatch the bytes written (e.g. after an alias model rewrite shortens the body).
+func copyResponseHeadersAndWrite(w http.ResponseWriter, resp *http.Response, body []byte, status int) {
+	copyResponseHeaders(w, resp)
+	w.Header().Set("Content-Length", strconv.Itoa(len(body)))
+	w.WriteHeader(status)
+	_, _ = w.Write(body)
 }
 
 func setBackendAuth(req *http.Request, incomingReq *http.Request, provider models.Provider) {
@@ -505,9 +524,7 @@ func (h *Handler) proxyNonStreaming(w http.ResponseWriter, r *http.Request, body
 			log.ProviderName = route.Provider.Name
 			log.ResolvedModel = route.ModelID
 			log.TotalTimeMs = int(time.Since(startTime).Milliseconds())
-			copyResponseHeaders(w, resp)
-			w.WriteHeader(resp.StatusCode)
-			_, _ = w.Write(respOut)
+			copyResponseHeadersAndWrite(w, resp, respOut, resp.StatusCode)
 			h.metrics.Record(log)
 			return
 		}
@@ -550,9 +567,7 @@ func (h *Handler) proxyNonStreaming(w http.ResponseWriter, r *http.Request, body
 			)
 		}
 		// 4xx: no circuit reporting (client error, not provider fault)
-		copyResponseHeaders(w, resp)
-		w.WriteHeader(resp.StatusCode)
-		_, _ = w.Write(respOut)
+		copyResponseHeadersAndWrite(w, resp, respOut, resp.StatusCode)
 		h.metrics.Record(log)
 		return
 	}
@@ -826,9 +841,7 @@ func (h *Handler) HandleAudioTranscriptions(w http.ResponseWriter, r *http.Reque
 			log.ProviderName = route.Provider.Name
 			log.ResolvedModel = route.ModelID
 			log.TotalTimeMs = int(time.Since(startTime).Milliseconds())
-			copyResponseHeaders(w, resp)
-			w.WriteHeader(resp.StatusCode)
-			_, _ = w.Write(respOut)
+			copyResponseHeadersAndWrite(w, resp, respOut, resp.StatusCode)
 			h.metrics.Record(log)
 			return
 		}
@@ -842,9 +855,7 @@ func (h *Handler) HandleAudioTranscriptions(w http.ResponseWriter, r *http.Reque
 			h.router.ReportSuccess(route.Provider.ID)
 			applyUsageToLog(log, parseUsageFromBody(respOut))
 		}
-		copyResponseHeaders(w, resp)
-		w.WriteHeader(resp.StatusCode)
-		_, _ = w.Write(respOut)
+		copyResponseHeadersAndWrite(w, resp, respOut, resp.StatusCode)
 		h.metrics.Record(log)
 		return
 	}
