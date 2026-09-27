@@ -23,6 +23,7 @@ type ConfigHandler struct {
 func (h *ConfigHandler) HandleGetConfig(w http.ResponseWriter, r *http.Request) {
 	config, err := h.store.GetAllConfig(r.Context())
 	if err != nil {
+		slog.Default().Error("failed to load configuration", "error", err)
 		respondError(w, http.StatusInternalServerError, "failed to load configuration")
 		return
 	}
@@ -191,6 +192,7 @@ func (h *ConfigHandler) HandleUpdateConfig(w http.ResponseWriter, r *http.Reques
 
 	for k, v := range config {
 		if err := h.store.SetConfig(r.Context(), k, v); err != nil {
+			slog.Default().Error("failed to save configuration", "key", k, "error", err)
 			respondError(w, http.StatusInternalServerError, "failed to save configuration")
 			return
 		}
