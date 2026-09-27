@@ -1582,3 +1582,41 @@ func TestGoStringTimestampsAreRewrittenAndQueryable(t *testing.T) {
 		t.Fatalf("lifetime cost: %+v", cost)
 	}
 }
+
+func TestQueryRequestLogsNullAPIKey(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Second)
+	id := uuid.NewString()
+	log := &models.RequestLog{
+		ID: id, Timestamp: now, ClientIP: "127.0.0.1",
+		Method: "POST", Path: "/v1/chat/completions",
+		StatusCode: 200, TotalTimeMs: 10, CreatedAt: now,
+	}
+	if err := store.InsertRequestLog(ctx, log); err != nil {
+		t.Fatalf("InsertRequestLog: %v", err)
+	}
+	// Rows written before the api_key columns existed are NULL, not "".
+	if _, err := store.db.ExecContext(ctx, `UPDATE request_logs SET api_key_id = NULL, api_key_name = NULL WHERE id = ?`, id); err != nil {
+		t.Fatalf("null api key columns: %v", err)
+	}
+
+	logs, total, err := store.QueryRequestLogs(ctx, models.LogFilter{Limit: 10})
+	if err != nil {
+		t.Fatalf("QueryRequestLogs: %v", err)
+	}
+	if total != 1 || len(logs) != 1 {
+		t.Fatalf("expected 1 log, total=%d len=%d", total, len(logs))
+	}
+	if logs[0].APIKeyID != "" || logs[0].APIKeyName != "" {
+		t.Fatalf("expected empty api key fields, got id=%q name=%q", logs[0].APIKeyID, logs[0].APIKeyName)
+	}
+
+	got, err := store.GetRequestLog(ctx, id)
+	if err != nil {
+		t.Fatalf("GetRequestLog: %v", err)
+	}
+	if got.APIKeyID != "" || got.APIKeyName != "" {
+		t.Fatalf("detail api key fields: id=%q name=%q", got.APIKeyID, got.APIKeyName)
+	}
+}

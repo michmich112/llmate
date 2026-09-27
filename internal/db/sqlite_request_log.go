@@ -21,7 +21,7 @@ const requestLogCols = `id, timestamp, client_ip, method, path, requested_model,
 func applyRequestLogFields(
 	log *models.RequestLog,
 	timestamp, createdAt timeScanner,
-	requestedModel, resolvedModel, providerID, providerName, errorMessage sql.NullString,
+	requestedModel, resolvedModel, providerID, providerName, errorMessage, apiKeyID, apiKeyName sql.NullString,
 	ttftMs, promptTokens, completionTokens, totalTokens, cachedTokens sql.NullInt64,
 ) {
 	log.Timestamp = timestamp.Time
@@ -40,6 +40,13 @@ func applyRequestLogFields(
 	}
 	if errorMessage.Valid {
 		log.ErrorMessage = errorMessage.String
+	}
+	// Columns added after existing rows were written are NULL, not empty strings.
+	if apiKeyID.Valid {
+		log.APIKeyID = apiKeyID.String
+	}
+	if apiKeyName.Valid {
+		log.APIKeyName = apiKeyName.String
 	}
 	if ttftMs.Valid {
 		v := int(ttftMs.Int64)
@@ -66,6 +73,7 @@ func applyRequestLogFields(
 func scanRequestLog(scan func(...any) error) (models.RequestLog, error) {
 	var log models.RequestLog
 	var requestedModel, resolvedModel, providerID, providerName, errorMessage sql.NullString
+	var apiKeyID, apiKeyName sql.NullString
 	var ttftMs, promptTokens, completionTokens, totalTokens, cachedTokens sql.NullInt64
 	var estimatedCost sql.NullFloat64
 	var timestamp, createdAt timeScanner
@@ -77,13 +85,13 @@ func scanRequestLog(scan func(...any) error) (models.RequestLog, error) {
 		&promptTokens, &completionTokens, &totalTokens, &cachedTokens,
 		&errorMessage, &createdAt,
 		&estimatedCost,
-		&log.APIKeyID, &log.APIKeyName,
+		&apiKeyID, &apiKeyName,
 	)
 	if err != nil {
 		return models.RequestLog{}, err
 	}
 	applyRequestLogFields(&log, timestamp, createdAt,
-		requestedModel, resolvedModel, providerID, providerName, errorMessage,
+		requestedModel, resolvedModel, providerID, providerName, errorMessage, apiKeyID, apiKeyName,
 		ttftMs, promptTokens, completionTokens, totalTokens, cachedTokens)
 	if estimatedCost.Valid {
 		log.EstimatedCostUSD = &estimatedCost.Float64
@@ -94,6 +102,7 @@ func scanRequestLog(scan func(...any) error) (models.RequestLog, error) {
 func scanRequestLogFull(scan func(...any) error) (models.RequestLog, error) {
 	var log models.RequestLog
 	var requestedModel, resolvedModel, providerID, providerName, errorMessage sql.NullString
+	var apiKeyID, apiKeyName sql.NullString
 	var requestBody, responseBody sql.NullString
 	var ttftMs, promptTokens, completionTokens, totalTokens, cachedTokens sql.NullInt64
 	var estimatedCost sql.NullFloat64
@@ -106,14 +115,14 @@ func scanRequestLogFull(scan func(...any) error) (models.RequestLog, error) {
 		&promptTokens, &completionTokens, &totalTokens, &cachedTokens,
 		&errorMessage, &createdAt,
 		&estimatedCost,
-		&log.APIKeyID, &log.APIKeyName,
+		&apiKeyID, &apiKeyName,
 		&requestBody, &responseBody,
 	)
 	if err != nil {
 		return models.RequestLog{}, err
 	}
 	applyRequestLogFields(&log, timestamp, createdAt,
-		requestedModel, resolvedModel, providerID, providerName, errorMessage,
+		requestedModel, resolvedModel, providerID, providerName, errorMessage, apiKeyID, apiKeyName,
 		ttftMs, promptTokens, completionTokens, totalTokens, cachedTokens)
 	if estimatedCost.Valid {
 		log.EstimatedCostUSD = &estimatedCost.Float64
