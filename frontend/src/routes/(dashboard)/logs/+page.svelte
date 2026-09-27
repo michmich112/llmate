@@ -93,13 +93,17 @@
 
   const streamingHasPurgedBodies = $derived(streamingLogs.some((c) => c.body_purged));
 
+  function toDatetimeLocal(d: Date): string {
+    const pad = (n: number) => String(n).padStart(2, '0');
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  }
+
   function defaultSince(): string {
-    const d = new Date(Date.now() - 24 * 60 * 60 * 1000);
-    return d.toISOString().slice(0, 16);
+    return toDatetimeLocal(new Date(Date.now() - 24 * 60 * 60 * 1000));
   }
 
   function defaultUntil(): string {
-    return new Date().toISOString().slice(0, 16);
+    return toDatetimeLocal(new Date());
   }
 
   onMount(() => {
@@ -264,7 +268,7 @@
             class="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
           >
             <option value="">All Providers</option>
-            {#each providers as p}
+            {#each providers as p (p.id)}
               <option value={p.id}>{p.name}</option>
             {/each}
           </select>
