@@ -1,11 +1,17 @@
 {
   "$schema": "https://opencode.ai/config.json",
-   "compaction": {
+  "permission": {
+    "*": "allow"
+  },
+  "compaction": {
     "auto": true,
     "prune": false,
     "reserved": 10000
   },
-  "instructions": ["AGENTS.md", "AGENT.md"],
+  "instructions": [
+    "AGENTS.md",
+    "AGENT.md"
+  ],
   "provider": {
     "llmate": {
       "npm": "@ai-sdk/openai-compatible",
