@@ -9,6 +9,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -431,6 +432,73 @@ func TestHandleChatCompletions_NonStreaming_AliasRewritesResponseModel(t *testin
 	}
 	if !strings.Contains(log.ResponseBody, `"model":"fast"`) {
 		t.Errorf("logged ResponseBody should use client model name: %s", log.ResponseBody)
+	}
+}
+
+// TestHandleChatCompletions_NonStreaming_ContentLengthMatchesBody is a regression
+// test for a Content-Length header that was longer than the actual response body.
+// When a request is routed via a gateway alias, the response "model" is rewritten
+// to the client's alias, which can shorten the body. The rewritten body must be
+// re-encoded with a Content-Length derived from the actual bytes written.
+func TestHandleChatCompletions_NonStreaming_ContentLengthMatchesBody(t *testing.T) {
+	const backendModel = "very-long-backend-model-name-1234567890"
+	// Backend model is much longer than the client alias "fast", so the alias
+	// rewrite shortens the body and the upstream Content-Length no longer matches.
+	respBody := `{"id":"chatcmpl-1","model":"` + backendModel + `","choices":[{"message":{"role":"assistant","content":"Hi"}}]}`
+	if len(respBody) < 2 {
+		t.Fatal("test body too short to be meaningful")
+	}
+
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(200)
+		fmt.Fprint(w, respBody)
+	}))
+	defer backend.Close()
+
+	router := &mockRouter{
+		routeFn: func(_ context.Context, _ string, ep string) (*RouteResult, error) {
+			res := fixedRoute(backend.URL, ep)
+			res.ModelID = backendModel
+			res.RequestedViaAlias = true
+			return res, nil
+		},
+	}
+	metrics := &mockMetrics{}
+	h := newTestHandler(router, metrics)
+
+	body := `{"model":"fast","messages":[{"role":"user","content":"Hi"}]}`
+	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	h.HandleChatCompletions(rr, req)
+
+	if rr.Code != 200 {
+		t.Fatalf("expected 200, got %d; body: %s", rr.Code, rr.Body.String())
+	}
+
+	actual := rr.Body.Bytes()
+	cl := rr.Header().Get("Content-Length")
+	if cl == "" {
+		t.Fatalf("response missing Content-Length header")
+	}
+	if cl != strconv.Itoa(len(actual)) {
+		t.Errorf("Content-Length = %s, want %d (len of actual body %d)", cl, len(actual), len(actual))
+	}
+
+	// The rewrite must have actually changed the model so the test reproduces the bug.
+	var out struct {
+		Model string `json:"model"`
+	}
+	if err := json.Unmarshal(actual, &out); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if out.Model != "fast" {
+		t.Errorf("response model = %q, want fast (alias rewrite applied)", out.Model)
+	}
+	if len(actual) == len(respBody) {
+		t.Log("note: rewrite produced same-length body; test still validates Content-Length invariant")
 	}
 }
 
