@@ -53,33 +53,35 @@ func NewLibSQLStore(dbPath, legacyPath string) (*SQLiteStore, error) {
 // (Turso/libSQL client).
 func openDB(driver, dbPath, legacyPath string) (*sql.DB, error) {
 	var dsn string
+	// _time_format=sqlite stores time.Time as "2006-01-02 15:04:05.999999999-07:00",
+	// which SQLite date functions can parse. Without it, modernc uses time.Time.String()
+	// ("... +0000 UTC"), which does not compare as the same instant.
+	//
+	// busy_timeout and foreign_keys are per-connection. Putting them in the DSN
+	// as _pragma applies them to every pooled connection; a one-shot
+	// db.Exec("PRAGMA ...") only affects whichever connection happens to run it.
+	const sqliteQuery = "_time_format=sqlite&_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)"
 	switch driver {
 	case "sqlite":
-		// _time_format=sqlite instructs modernc.org/sqlite to store time.Time
-		// values in "2006-01-02 15:04:05.999999999-07:00" format, which SQLite's
-		// strftime() and datetime() functions can parse natively.
-		//
-		// busy_timeout and foreign_keys are per-connection. Putting them in the
-		// DSN as _pragma applies them to every pooled connection; a one-shot
-		// db.Exec("PRAGMA ...") only affects whichever connection happens to
-		// run it, so concurrent writers (request-log persist vs admin config)
-		// would get immediate SQLITE_BUSY.
-		const sqliteQuery = "_time_format=sqlite&_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)"
 		if dbPath == ":memory:" {
 			dsn = "file::memory:?" + sqliteQuery
 		} else {
 			dsn = "file:" + dbPath + "?" + sqliteQuery
 		}
 	case "libsql":
+		// Local files go through modernc, so they need the same DSN parameters.
+		// Remote Turso URLs already encode time.Time as sqlite text.
 		if dbPath == ":memory:" {
-			dsn = "file::memory:"
+			dsn = "file::memory:?" + sqliteQuery
+		} else if isRemoteLibSQL(dbPath) {
+			dsn = dbPath
 		} else {
 			// libsql file:// URLs require an absolute path with a triple slash.
 			abs, err := filepath.Abs(dbPath)
 			if err != nil {
 				return nil, fmt.Errorf("resolve libsql path %q: %w", dbPath, err)
 			}
-			dsn = "file://" + abs
+			dsn = "file://" + abs + "?" + sqliteQuery
 		}
 	default:
 		return nil, fmt.Errorf("unsupported db driver %q", driver)
@@ -276,13 +278,24 @@ type nullTimeScanner struct {
 
 // timeFormats lists every format that may appear in the database, newest first.
 var timeFormats = []string{
-	"2006-01-02 15:04:05.999999999 -07:00", // space before tz offset (written by modernc with _time_format=sqlite)
-	"2006-01-02 15:04:05.999999999-07:00",  // no space before tz offset
-	"2006-01-02 15:04:05 -07:00",           // no fractional seconds, space before tz
-	"2006-01-02 15:04:05-07:00",            // no fractional seconds, no space
-	"2006-01-02 15:04:05",                  // no tz at all
+	"2006-01-02 15:04:05.999999999 -0700 MST", // time.Time.String(); modernc default when _time_format is unset
+	"2006-01-02 15:04:05.999999999 -07:00",    // space before tz offset
+	"2006-01-02 15:04:05.999999999-07:00",     // sqlite format written with _time_format=sqlite
+	"2006-01-02 15:04:05 -07:00",              // no fractional seconds, space before tz
+	"2006-01-02 15:04:05-07:00",               // no fractional seconds, no space
+	"2006-01-02 15:04:05",                     // no tz at all
 	time.RFC3339Nano,
 	time.RFC3339,
+}
+
+// isRemoteLibSQL reports whether dbPath is a Turso/libSQL server URL rather
+// than a local file. Remote drivers already encode time.Time as sqlite text.
+func isRemoteLibSQL(dbPath string) bool {
+	return strings.HasPrefix(dbPath, "libsql://") ||
+		strings.HasPrefix(dbPath, "https://") ||
+		strings.HasPrefix(dbPath, "http://") ||
+		strings.HasPrefix(dbPath, "wss://") ||
+		strings.HasPrefix(dbPath, "ws://")
 }
 
 func (n *nullTimeScanner) Scan(value any) error {

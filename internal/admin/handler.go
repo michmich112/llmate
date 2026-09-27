@@ -26,8 +26,10 @@ import (
 
 // Handler holds admin API dependencies. The caller must not pass a nil store.
 type Handler struct {
-	store            db.Store
-	configHandler    *ConfigHandler
+	store         db.Store
+	configHandler *ConfigHandler
+	// statsAcc is the live usage cache filled by the proxy. Dashboard reads use
+	// the store so a failed backfill cannot hide historical logs.
 	statsAcc         *stats.Accumulator
 	queryWorker      *QueryWorker
 	onRoutingChanged proxy.RoutingChangeNotifier
@@ -955,7 +957,7 @@ func (h *Handler) HandleQueryLogs(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if s := q.Get("since"); s != "" {
-		t, err := time.Parse(time.RFC3339, s)
+		t, err := parseRFC3339Param(s)
 		if err != nil {
 			respondError(w, http.StatusBadRequest, "invalid since: must be RFC3339")
 			return
@@ -964,7 +966,7 @@ func (h *Handler) HandleQueryLogs(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if s := q.Get("until"); s != "" {
-		t, err := time.Parse(time.RFC3339, s)
+		t, err := parseRFC3339Param(s)
 		if err != nil {
 			respondError(w, http.StatusBadRequest, "invalid until: must be RFC3339")
 			return

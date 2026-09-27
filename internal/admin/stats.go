@@ -37,62 +37,59 @@ func parseRFC3339Param(s string) (time.Time, error) {
 
 // parseStatsWindow resolves the dashboard time window from query params.
 // Absolute from/to (RFC3339) take precedence over relative since durations.
-// Returns useDB=true when the caller should query SQLite rather than the in-memory accumulator.
-func parseStatsWindow(q url.Values) (since, until time.Time, useDB bool, err error) {
+// Both kinds of window are queried from the database. The in-memory accumulator
+// is only a partial cache: its backfill can fail, and it does not hold history
+// outside its retention window.
+func parseStatsWindow(q url.Values) (since, until time.Time, err error) {
 	now := time.Now().UTC()
 	fromStr := q.Get("from")
 	toStr := q.Get("to")
 
 	if fromStr != "" || toStr != "" {
 		if fromStr == "" || toStr == "" {
-			return time.Time{}, time.Time{}, false, errMissingFromTo
+			return time.Time{}, time.Time{}, errMissingFromTo
 		}
 		since, err = parseRFC3339Param(fromStr)
 		if err != nil {
-			return time.Time{}, time.Time{}, false, errInvalidFrom
+			return time.Time{}, time.Time{}, errInvalidFrom
 		}
 		until, err = parseRFC3339Param(toStr)
 		if err != nil {
-			return time.Time{}, time.Time{}, false, errInvalidTo
+			return time.Time{}, time.Time{}, errInvalidTo
 		}
 		if until.Before(since) {
-			return time.Time{}, time.Time{}, false, errFromAfterTo
+			return time.Time{}, time.Time{}, errFromAfterTo
 		}
-		return since.UTC(), until.UTC(), true, nil
+		return since.UTC(), until.UTC(), nil
 	}
 
 	d := 24 * time.Hour
 	if s := q.Get("since"); s != "" {
 		d, err = parseDurationParam(s)
 		if err != nil {
-			return time.Time{}, time.Time{}, false, fmt.Errorf("invalid since: %w", err)
+			return time.Time{}, time.Time{}, fmt.Errorf("invalid since: %w", err)
 		}
 	}
-	return now.Add(-d), now, false, nil
+	return now.Add(-d), now, nil
 }
 
 func (h *Handler) HandleGetStats(w http.ResponseWriter, r *http.Request) {
-	since, until, useDB, err := parseStatsWindow(r.URL.Query())
+	since, until, err := parseStatsWindow(r.URL.Query())
 	if err != nil {
 		respondError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
-	var stats *models.DashboardStats
-	if useDB {
-		stats, err = h.store.GetDashboardStats(r.Context(), since, until)
-		if err != nil {
-			respondError(w, http.StatusInternalServerError, "failed to load stats")
-			return
-		}
-	} else {
-		stats = h.statsAcc.DashboardStats(since)
+	stats, err := h.store.GetDashboardStats(r.Context(), since, until)
+	if err != nil {
+		respondError(w, http.StatusInternalServerError, "failed to load stats")
+		return
 	}
 
 	if stats.ByAPIKey == nil {
 		stats.ByAPIKey = []models.APIKeyStats{}
 	}
-	resp := map[string]interface{}{
+	respondJSON(w, http.StatusOK, map[string]interface{}{
 		"total_requests":  stats.TotalRequests,
 		"avg_latency_ms":  stats.AvgLatencyMs,
 		"error_rate":      stats.ErrorRate,
@@ -100,16 +97,12 @@ func (h *Handler) HandleGetStats(w http.ResponseWriter, r *http.Request) {
 		"by_provider":     stats.ByProvider,
 		"by_api_key":      stats.ByAPIKey,
 		"active_requests": proxy.ActiveCount(h.active),
-	}
-	if !useDB && h.statsAcc.Backfilling() {
-		resp["backfilling"] = true
-	}
-	respondJSON(w, http.StatusOK, resp)
+	})
 }
 
 func (h *Handler) HandleGetTimeSeries(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
-	since, until, useDB, err := parseStatsWindow(q)
+	since, until, err := parseStatsWindow(q)
 	if err != nil {
 		respondError(w, http.StatusBadRequest, err.Error())
 		return
@@ -124,22 +117,13 @@ func (h *Handler) HandleGetTimeSeries(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var points []models.TimeSeriesPoint
-	if useDB {
-		points, err = h.store.GetTimeSeries(r.Context(), since, until, granularity)
-		if err != nil {
-			respondError(w, http.StatusInternalServerError, "failed to load time series")
-			return
-		}
-	} else {
-		points = h.statsAcc.TimeSeries(since, until, granularity)
+	points, err := h.store.GetTimeSeries(r.Context(), since, until, granularity)
+	if err != nil {
+		respondError(w, http.StatusInternalServerError, "failed to load time series")
+		return
 	}
 
-	resp := map[string]interface{}{"points": points}
-	if !useDB && h.statsAcc.Backfilling() {
-		resp["backfilling"] = true
-	}
-	respondJSON(w, http.StatusOK, resp)
+	respondJSON(w, http.StatusOK, map[string]interface{}{"points": points})
 }
 
 // HandleMyStats returns dashboard stats for the API key authenticating the request.
@@ -150,7 +134,7 @@ func (h *Handler) HandleMyStats(w http.ResponseWriter, r *http.Request) {
 		respondError(w, http.StatusUnauthorized, "unauthorized")
 		return
 	}
-	since, until, _, err := parseStatsWindow(r.URL.Query())
+	since, until, err := parseStatsWindow(r.URL.Query())
 	if err != nil {
 		respondError(w, http.StatusBadRequest, err.Error())
 		return
@@ -179,7 +163,7 @@ func (h *Handler) HandleMyStatsTimeSeries(w http.ResponseWriter, r *http.Request
 		return
 	}
 	q := r.URL.Query()
-	since, until, _, err := parseStatsWindow(q)
+	since, until, err := parseStatsWindow(q)
 	if err != nil {
 		respondError(w, http.StatusBadRequest, err.Error())
 		return

@@ -856,6 +856,28 @@ func TestQueryLogs_DefaultPagination(t *testing.T) {
 	}
 }
 
+func TestQueryLogs_RFC3339NanoSince(t *testing.T) {
+	var captured models.LogFilter
+	store := &mockStore{
+		queryRequestLogs: func(_ context.Context, f models.LogFilter) ([]models.RequestLog, int, error) {
+			captured = f
+			return []models.RequestLog{}, 0, nil
+		},
+	}
+	h := testAdminHandler(store, HandlerConfig{})
+
+	since := time.Now().UTC().Add(-24 * time.Hour).Format(time.RFC3339Nano)
+	until := time.Now().UTC().Format(time.RFC3339Nano)
+	req := httptest.NewRequest(http.MethodGet, "/logs?since="+url.QueryEscape(since)+"&until="+url.QueryEscape(until), nil)
+	rec := serve(h, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 for RFC3339Nano since/until, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if captured.Since == nil || captured.Until == nil {
+		t.Fatal("expected since and until to be parsed")
+	}
+}
+
 func TestQueryLogs_InvalidLimit(t *testing.T) {
 	h := testAdminHandler(&mockStore{}, HandlerConfig{})
 	req := httptest.NewRequest(http.MethodGet, "/logs?limit=0", nil)
@@ -870,22 +892,28 @@ func TestQueryLogs_InvalidLimit(t *testing.T) {
 // ------------------------------------------------------------------
 
 func TestGetStats_OK(t *testing.T) {
-	acc := stats.NewAccumulator()
-	now := time.Now().UTC()
-	pt, ct, tt := 10, 5, 15
-	for i := 0; i < 100; i++ {
-		acc.Record(&models.RequestLog{
-			Timestamp: now, RequestedModel: "llama3", ProviderID: "p1", ProviderName: "Local",
-			StatusCode: 200, TotalTimeMs: 250, PromptTokens: &pt, CompletionTokens: &ct, TotalTokens: &tt,
-		}, nil)
-	}
-	h := testAdminHandlerWithStats(&mockStore{}, HandlerConfig{}, acc)
+	var gotSince, gotUntil time.Time
+	h := testAdminHandlerWithStats(&mockStore{
+		getDashboardStats: func(_ context.Context, since, until time.Time) (*models.DashboardStats, error) {
+			gotSince, gotUntil = since, until
+			return &models.DashboardStats{
+				TotalRequests: 100,
+				AvgLatencyMs:  250,
+				ByModel:       []models.ModelStats{{Model: "llama3", RequestCount: 100}},
+				ByProvider:    []models.ProviderStats{},
+			}, nil
+		},
+	}, HandlerConfig{}, stats.NewAccumulator())
 
 	req := httptest.NewRequest(http.MethodGet, "/stats?since=24h", nil)
 	rec := serve(h, req)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	window := gotUntil.Sub(gotSince)
+	if window < 23*time.Hour || window > 25*time.Hour {
+		t.Fatalf("expected ~24h database window, got %s", window)
 	}
 
 	var got models.DashboardStats
@@ -988,19 +1016,18 @@ func TestParseStatsWindow(t *testing.T) {
 	cases := []struct {
 		name    string
 		q       url.Values
-		wantDB  bool
 		wantErr bool
 	}{
-		{"relative since", url.Values{"since": []string{"7d"}}, false, false},
-		{"absolute from/to", url.Values{"from": []string{from.Format(time.RFC3339)}, "to": []string{to.Format(time.RFC3339)}}, true, false},
-		{"nano timestamps", url.Values{"from": []string{from.Format(time.RFC3339Nano)}, "to": []string{to.Format(time.RFC3339Nano)}}, true, false},
-		{"missing to", url.Values{"from": []string{from.Format(time.RFC3339)}}, false, true},
-		{"from after to", url.Values{"from": []string{to.Format(time.RFC3339)}, "to": []string{from.Format(time.RFC3339)}}, false, true},
-		{"invalid from", url.Values{"from": []string{"not-a-date"}, "to": []string{to.Format(time.RFC3339)}}, false, true},
+		{"relative since", url.Values{"since": []string{"7d"}}, false},
+		{"absolute from/to", url.Values{"from": []string{from.Format(time.RFC3339)}, "to": []string{to.Format(time.RFC3339)}}, false},
+		{"nano timestamps", url.Values{"from": []string{from.Format(time.RFC3339Nano)}, "to": []string{to.Format(time.RFC3339Nano)}}, false},
+		{"missing to", url.Values{"from": []string{from.Format(time.RFC3339)}}, true},
+		{"from after to", url.Values{"from": []string{to.Format(time.RFC3339)}, "to": []string{from.Format(time.RFC3339)}}, true},
+		{"invalid from", url.Values{"from": []string{"not-a-date"}, "to": []string{to.Format(time.RFC3339)}}, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			_, _, useDB, err := parseStatsWindow(tc.q)
+			since, until, err := parseStatsWindow(tc.q)
 			if tc.wantErr {
 				if err == nil {
 					t.Fatal("expected error")
@@ -1010,8 +1037,8 @@ func TestParseStatsWindow(t *testing.T) {
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
-			if useDB != tc.wantDB {
-				t.Fatalf("useDB: got %v, want %v", useDB, tc.wantDB)
+			if tc.name == "relative since" && until.Sub(since) != 7*24*time.Hour {
+				t.Fatalf("7d window: got %s", until.Sub(since))
 			}
 		})
 	}

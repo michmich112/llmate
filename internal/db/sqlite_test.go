@@ -4,6 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -1451,5 +1453,132 @@ func TestTimeSeriesByAPIKey(t *testing.T) {
 	}
 	if missingTotal != 0 {
 		t.Fatalf("expected zero requests for unknown key, got %d (%+v)", missingTotal, missing)
+	}
+}
+
+func TestTimeScannerParsesGoStringFormat(t *testing.T) {
+	withNanos := time.Date(2026, 9, 26, 15, 4, 5, 123456789, time.UTC)
+	withoutNanos := time.Date(2026, 9, 26, 15, 4, 5, 0, time.UTC)
+	for _, want := range []time.Time{withNanos, withoutNanos} {
+		var ts timeScanner
+		if err := ts.Scan(want.String()); err != nil {
+			t.Fatalf("Scan(%q): %v", want.String(), err)
+		}
+		if !ts.Time.Equal(want) {
+			t.Fatalf("Scan(%q) = %s, want %s", want.String(), ts.Time, want)
+		}
+	}
+}
+
+func TestLibSQLStoreRoundTripsRequestLogTimestamps(t *testing.T) {
+	store, err := NewLibSQLStore(filepath.Join(t.TempDir(), "llmate.db"), "")
+	if err != nil {
+		t.Fatalf("NewLibSQLStore: %v", err)
+	}
+	t.Cleanup(func() { store.Close() })
+
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	log := &models.RequestLog{
+		ID: uuid.NewString(), Timestamp: now, ClientIP: "127.0.0.1",
+		Method: "POST", Path: "/v1/chat/completions", RequestedModel: "gpt-4",
+		StatusCode: 200, TotalTimeMs: 10, CreatedAt: now,
+	}
+	if err := store.InsertRequestLog(ctx, log); err != nil {
+		t.Fatalf("InsertRequestLog: %v", err)
+	}
+
+	logs, total, err := store.QueryRequestLogs(ctx, models.LogFilter{Limit: 10})
+	if err != nil {
+		t.Fatalf("QueryRequestLogs: %v", err)
+	}
+	if total != 1 || len(logs) != 1 {
+		t.Fatalf("expected 1 log, total=%d len=%d", total, len(logs))
+	}
+	if !logs[0].Timestamp.Equal(now) {
+		t.Fatalf("timestamp: got %s, want %s", logs[0].Timestamp, now)
+	}
+
+	stats, err := store.GetDashboardStats(ctx, now.Add(-time.Hour), now.Add(time.Hour))
+	if err != nil {
+		t.Fatalf("GetDashboardStats: %v", err)
+	}
+	if stats.TotalRequests != 1 {
+		t.Fatalf("expected the log inside the window, got %d", stats.TotalRequests)
+	}
+}
+
+func TestGoStringTimestampsAreRewrittenAndQueryable(t *testing.T) {
+	store, err := NewLibSQLStore(filepath.Join(t.TempDir(), "llmate.db"), "")
+	if err != nil {
+		t.Fatalf("NewLibSQLStore: %v", err)
+	}
+	t.Cleanup(func() { store.Close() })
+
+	ctx := context.Background()
+	written := time.Date(2026, 9, 26, 15, 4, 5, 123456789, time.UTC)
+	log := &models.RequestLog{
+		ID: uuid.NewString(), Timestamp: written, ClientIP: "127.0.0.1",
+		Method: "POST", Path: "/v1/chat/completions", RequestedModel: "gpt-4",
+		StatusCode: 200, TotalTimeMs: 10, CreatedAt: written,
+	}
+	if err := store.InsertRequestLog(ctx, log); err != nil {
+		t.Fatalf("InsertRequestLog: %v", err)
+	}
+
+	// Simulate rows written by modernc before _time_format=sqlite was set.
+	raw := written.String()
+	if _, err := store.db.ExecContext(ctx, `UPDATE request_logs SET timestamp = ? WHERE id = ?`, raw, log.ID); err != nil {
+		t.Fatalf("rewrite timestamp: %v", err)
+	}
+
+	logs, _, err := store.QueryRequestLogs(ctx, models.LogFilter{Limit: 10})
+	if err != nil {
+		t.Fatalf("QueryRequestLogs before migration: %v", err)
+	}
+	if len(logs) != 1 || !logs[0].Timestamp.Equal(written) {
+		t.Fatalf("scanner should read Go string timestamps, got %+v err-len=%d", logs, len(logs))
+	}
+
+	if _, err := store.db.ExecContext(ctx, `DELETE FROM _migrations WHERE name = ?`, "0016_fix_go_string_timestamps.up.sql"); err != nil {
+		t.Fatalf("delete migration record: %v", err)
+	}
+	if err := runMigrations(store.db); err != nil {
+		t.Fatalf("rerun migrations: %v", err)
+	}
+
+	var text string
+	if err := store.db.QueryRowContext(ctx, `SELECT CAST(timestamp AS TEXT) FROM request_logs WHERE id = ?`, log.ID).Scan(&text); err != nil {
+		t.Fatalf("read stored timestamp: %v", err)
+	}
+	if strings.Contains(text, "+0000 UTC") || !strings.HasSuffix(text, "+00:00") {
+		t.Fatalf("timestamp was not rewritten to sqlite format: %q", text)
+	}
+
+	stats, err := store.GetDashboardStats(ctx, written.Add(-time.Hour), written.Add(time.Hour))
+	if err != nil {
+		t.Fatalf("GetDashboardStats: %v", err)
+	}
+	if stats.TotalRequests != 1 {
+		t.Fatalf("rewritten timestamp should fall inside the window, got %d requests (stored %q)", stats.TotalRequests, text)
+	}
+	points, err := store.GetTimeSeries(ctx, written.Add(-time.Hour), written.Add(time.Hour), "hour")
+	if err != nil {
+		t.Fatalf("GetTimeSeries: %v", err)
+	}
+	var requests int
+	for _, p := range points {
+		requests += p.Requests
+	}
+	if requests != 1 {
+		t.Fatalf("timeseries should include the rewritten log, got %d requests", requests)
+	}
+
+	cost, err := store.GetLifetimeCost(ctx)
+	if err != nil {
+		t.Fatalf("GetLifetimeCost: %v", err)
+	}
+	if cost.TotalRequests != 1 || cost.FirstRequest == nil {
+		t.Fatalf("lifetime cost: %+v", cost)
 	}
 }
