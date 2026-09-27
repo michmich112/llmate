@@ -10,7 +10,7 @@
   const navItems = [
     { label: 'Dashboard', path: '/' },
     { label: 'Providers', path: '/providers' },
-    { label: 'Models', path: '/dashboard/models' },
+    { label: 'Model Aliases', path: '/dashboard/models' },
     { label: 'Logs', path: '/logs' },
     { label: 'API Keys', path: '/keys' },
     { label: 'Settings', path: '/settings' }
