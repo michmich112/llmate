@@ -19,6 +19,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/llmate/gateway/internal/middleware"
 	"github.com/llmate/gateway/internal/models"
+	"github.com/llmate/gateway/internal/db"
 )
 
 // isClientCanceled reports whether err is a client-side request cancellation.
@@ -65,18 +66,21 @@ type Handler struct {
 	config  *ConfigSnapshot
 	client  *http.Client
 	active  *ActiveRegistry
+	store   db.Store
+	limiter *KeyLimiter
 	logger  *slog.Logger
 }
 
 // NewHandler creates a new Handler. If client is nil, a default client with a 5-minute timeout
 // is used. Production callers should inject a client with appropriate read/write timeouts.
-func NewHandler(router Router, metrics MetricsCollector, catalog *RoutingCatalog, config *ConfigSnapshot, client *http.Client) *Handler {
+func NewHandler(router Router, metrics MetricsCollector, catalog *RoutingCatalog, config *ConfigSnapshot, client *http.Client, store db.Store) *Handler {
 	if client == nil {
 		client = &http.Client{Timeout: 5 * time.Minute}
 	}
 	return &Handler{
 		router: router, metrics: metrics, catalog: catalog, config: config,
 		client: client, active: NewActiveRegistry(), logger: slog.Default(),
+		store: store, limiter: NewKeyLimiter(),
 	}
 }
 
@@ -355,6 +359,12 @@ func (h *Handler) proxyNonStreaming(w http.ResponseWriter, r *http.Request, body
 		Path:           r.URL.Path,
 		RequestedModel: model,
 		CreatedAt:      startTime.UTC(),
+	}
+
+	// Stamp the authenticated API key identity onto the log (if any).
+	if ka := apiKeyFromContext(r.Context()); ka != nil {
+		log.APIKeyID = ka.ID
+		log.APIKeyName = ka.Name
 	}
 
 	reqID := middleware.GetRequestID(r.Context())
@@ -941,6 +951,12 @@ func (h *Handler) handleStreamingRequest(w http.ResponseWriter, r *http.Request,
 		IsStreamed:     true,
 		CreatedAt:      startTime.UTC(),
 		RequestBody:    truncateBodyWithConfig(body, reqMax),
+	}
+
+	// Stamp the authenticated API key identity onto the log (if any).
+	if ka := apiKeyFromContext(r.Context()); ka != nil {
+		log.APIKeyID = ka.ID
+		log.APIKeyName = ka.Name
 	}
 
 	var resp *http.Response

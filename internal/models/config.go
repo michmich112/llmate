@@ -16,6 +16,7 @@ const (
 	DefaultStreamingLogBodyRetentionDays = 30
 	DefaultRequestLogBodyRetentionDays   = 30
 	DefaultResponseLogBodyRetentionDays  = 30
+	DefaultRequireAPIKeys                = false
 	// MinStreamingLogBodyRetentionDays and Max apply to all persisted body retention settings (streaming chunks, request bodies, response bodies).
 	MinStreamingLogBodyRetentionDays = 1
 	MaxStreamingLogBodyRetentionDays = 3650
@@ -30,6 +31,9 @@ type Configuration struct {
 	StreamingLogBodyRetentionDays int  `json:"streaming_log_body_retention_days"`
 	RequestLogBodyRetentionDays   int  `json:"request_log_body_retention_days"`
 	ResponseLogBodyRetentionDays  int  `json:"response_log_body_retention_days"`
+	// RequireAPIKeys is the only switch for whether gateway requests must
+	// present a valid API key. It is independent of whether any keys exist.
+	RequireAPIKeys bool `json:"require_api_keys"`
 }
 
 func DefaultConfiguration() Configuration {
@@ -42,6 +46,7 @@ func DefaultConfiguration() Configuration {
 		StreamingLogBodyRetentionDays: DefaultStreamingLogBodyRetentionDays,
 		RequestLogBodyRetentionDays:   DefaultRequestLogBodyRetentionDays,
 		ResponseLogBodyRetentionDays:  DefaultResponseLogBodyRetentionDays,
+		RequireAPIKeys:                DefaultRequireAPIKeys,
 	}
 }
 

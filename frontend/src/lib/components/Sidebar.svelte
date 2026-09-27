@@ -5,13 +5,20 @@
   import Logo from '$lib/components/Logo.svelte';
   import { cn } from '$lib/utils';
 
+  let { role }: { role: 'admin' | 'key' } = $props();
+
   const navItems = [
     { label: 'Dashboard', path: '/' },
     { label: 'Providers', path: '/providers' },
     { label: 'Models', path: '/dashboard/models' },
     { label: 'Logs', path: '/logs' },
+    { label: 'API Keys', path: '/keys' },
     { label: 'Settings', path: '/settings' }
   ] as const;
+
+  const visibleItems = $derived(
+    role === 'key' ? ([{ label: 'Dashboard', path: '/' }] as const) : navItems
+  );
 
   function isActive(path: string): boolean {
     if (path === '/') {
@@ -38,7 +45,7 @@
   </div>
 
   <ul class="flex-1 space-y-1">
-    {#each navItems as item}
+    {#each visibleItems as item}
       <li>
         <a
           href={item.path}

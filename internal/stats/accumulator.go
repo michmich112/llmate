@@ -39,6 +39,7 @@ type bucketStats struct {
 	cachedCostUSD    float64
 	byModel          map[string]*models.ModelStats
 	byProvider       map[string]*models.ProviderStats
+	byAPIKey         map[string]*models.APIKeyStats
 }
 
 type Accumulator struct {
@@ -69,9 +70,14 @@ func (a *Accumulator) Record(log *models.RequestLog, pm *models.ProviderModel) {
 func (a *Accumulator) DashboardStats(since time.Time) *models.DashboardStats {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
-	out := &models.DashboardStats{ByModel: []models.ModelStats{}, ByProvider: []models.ProviderStats{}}
+	out := &models.DashboardStats{
+		ByModel:    []models.ModelStats{},
+		ByProvider: []models.ProviderStats{},
+		ByAPIKey:   []models.APIKeyStats{},
+	}
 	modelAgg := map[string]*models.ModelStats{}
 	provAgg := map[string]*models.ProviderStats{}
+	keyAgg := map[string]*models.APIKeyStats{}
 	var total int
 	var latencySum int64
 	var errors int
@@ -104,6 +110,17 @@ func (a *Accumulator) DashboardStats(since time.Time) *models.DashboardStats {
 				provAgg[id] = &copy
 			}
 		}
+		for id, ks := range b.byAPIKey {
+			if cur, ok := keyAgg[id]; ok {
+				cur.RequestCount += ks.RequestCount
+				cur.ErrorCount += ks.ErrorCount
+				cur.TotalTokens += ks.TotalTokens
+				cur.AvgLatencyMs = weightedAvg(cur.AvgLatencyMs, cur.RequestCount-ks.RequestCount, ks.AvgLatencyMs, ks.RequestCount)
+			} else {
+				copy := *ks
+				keyAgg[id] = &copy
+			}
+		}
 	}
 	out.TotalRequests = total
 	if total > 0 {
@@ -118,6 +135,10 @@ func (a *Accumulator) DashboardStats(since time.Time) *models.DashboardStats {
 		out.ByProvider = append(out.ByProvider, *ps)
 	}
 	sort.Slice(out.ByProvider, func(i, j int) bool { return out.ByProvider[i].RequestCount > out.ByProvider[j].RequestCount })
+	for _, ks := range keyAgg {
+		out.ByAPIKey = append(out.ByAPIKey, *ks)
+	}
+	sort.Slice(out.ByAPIKey, func(i, j int) bool { return out.ByAPIKey[i].RequestCount > out.ByAPIKey[j].RequestCount })
 	return out
 }
 
@@ -211,7 +232,11 @@ func (a *Accumulator) aggregateDay(dayKey string) models.TimeSeriesPoint {
 func (a *Accumulator) ensureBucket(key string) *bucketStats {
 	b, ok := a.hourly[key]
 	if !ok {
-		b = &bucketStats{byModel: map[string]*models.ModelStats{}, byProvider: map[string]*models.ProviderStats{}}
+		b = &bucketStats{
+			byModel:    map[string]*models.ModelStats{},
+			byProvider: map[string]*models.ProviderStats{},
+			byAPIKey:   map[string]*models.APIKeyStats{},
+		}
 		a.hourly[key] = b
 	}
 	return b
@@ -279,6 +304,30 @@ func (a *Accumulator) applyLog(b *bucketStats, log *models.RequestLog, costs pri
 	ps.AvgLatencyMs = weightedAvg(ps.AvgLatencyMs, ps.RequestCount-1, float64(log.TotalTimeMs), 1)
 	if log.StatusCode >= 400 {
 		ps.ErrorCount++
+	}
+
+	keyID := log.APIKeyID
+	keyName := log.APIKeyName
+	if keyID == "" {
+		keyName = "No API key"
+	} else if keyName == "" {
+		keyName = keyID
+	}
+	if b.byAPIKey == nil {
+		b.byAPIKey = map[string]*models.APIKeyStats{}
+	}
+	ks := b.byAPIKey[keyID]
+	if ks == nil {
+		ks = &models.APIKeyStats{APIKeyID: keyID, APIKeyName: keyName}
+		b.byAPIKey[keyID] = ks
+	}
+	ks.RequestCount++
+	ks.AvgLatencyMs = weightedAvg(ks.AvgLatencyMs, ks.RequestCount-1, float64(log.TotalTimeMs), 1)
+	if log.StatusCode >= 400 {
+		ks.ErrorCount++
+	}
+	if log.TotalTokens != nil {
+		ks.TotalTokens += *log.TotalTokens
 	}
 }
 

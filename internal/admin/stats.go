@@ -89,12 +89,16 @@ func (h *Handler) HandleGetStats(w http.ResponseWriter, r *http.Request) {
 		stats = h.statsAcc.DashboardStats(since)
 	}
 
+	if stats.ByAPIKey == nil {
+		stats.ByAPIKey = []models.APIKeyStats{}
+	}
 	resp := map[string]interface{}{
-		"total_requests": stats.TotalRequests,
-		"avg_latency_ms": stats.AvgLatencyMs,
-		"error_rate":     stats.ErrorRate,
-		"by_model":       stats.ByModel,
-		"by_provider":    stats.ByProvider,
+		"total_requests":  stats.TotalRequests,
+		"avg_latency_ms":  stats.AvgLatencyMs,
+		"error_rate":      stats.ErrorRate,
+		"by_model":        stats.ByModel,
+		"by_provider":     stats.ByProvider,
+		"by_api_key":      stats.ByAPIKey,
 		"active_requests": proxy.ActiveCount(h.active),
 	}
 	if !useDB && h.statsAcc.Backfilling() {
@@ -136,6 +140,82 @@ func (h *Handler) HandleGetTimeSeries(w http.ResponseWriter, r *http.Request) {
 		resp["backfilling"] = true
 	}
 	respondJSON(w, http.StatusOK, resp)
+}
+
+// HandleMyStats returns dashboard stats for the API key authenticating the request.
+// It always reads SQLite (the in-memory accumulator is global) and omits provider data.
+func (h *Handler) HandleMyStats(w http.ResponseWriter, r *http.Request) {
+	key := h.authenticateAPIKey(r)
+	if key == nil {
+		respondError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	since, until, _, err := parseStatsWindow(r.URL.Query())
+	if err != nil {
+		respondError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	stats, err := h.store.GetDashboardStatsForAPIKey(r.Context(), key.ID, since, until)
+	if err != nil {
+		respondError(w, http.StatusInternalServerError, "failed to load stats")
+		return
+	}
+	if stats.ByModel == nil {
+		stats.ByModel = []models.ModelStats{}
+	}
+	respondJSON(w, http.StatusOK, map[string]interface{}{
+		"total_requests": stats.TotalRequests,
+		"avg_latency_ms": stats.AvgLatencyMs,
+		"error_rate":     stats.ErrorRate,
+		"by_model":       stats.ByModel,
+	})
+}
+
+// HandleMyStatsTimeSeries returns time-bucketed usage for the authenticating API key.
+func (h *Handler) HandleMyStatsTimeSeries(w http.ResponseWriter, r *http.Request) {
+	key := h.authenticateAPIKey(r)
+	if key == nil {
+		respondError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	q := r.URL.Query()
+	since, until, _, err := parseStatsWindow(q)
+	if err != nil {
+		respondError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	granularity := q.Get("granularity")
+	if granularity == "" {
+		granularity = defaultGranularity(until.Sub(since))
+	}
+	if granularity != "hour" && granularity != "day" {
+		respondError(w, http.StatusBadRequest, "granularity must be hour or day")
+		return
+	}
+	points, err := h.store.TimeSeriesByAPIKey(r.Context(), key.ID, since, until, granularity)
+	if err != nil {
+		respondError(w, http.StatusInternalServerError, "failed to load time series")
+		return
+	}
+	if points == nil {
+		points = []models.TimeSeriesPoint{}
+	}
+	respondJSON(w, http.StatusOK, map[string]interface{}{"points": points})
+}
+
+// HandleMyLifetimeCost returns all-time spend for the authenticating API key.
+func (h *Handler) HandleMyLifetimeCost(w http.ResponseWriter, r *http.Request) {
+	key := h.authenticateAPIKey(r)
+	if key == nil {
+		respondError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	cost, err := h.store.GetLifetimeCostForAPIKey(r.Context(), key.ID)
+	if err != nil {
+		respondError(w, http.StatusInternalServerError, "failed to load lifetime cost")
+		return
+	}
+	respondJSON(w, http.StatusOK, cost)
 }
 
 func (h *Handler) HandleGetLifetimeCost(w http.ResponseWriter, r *http.Request) {

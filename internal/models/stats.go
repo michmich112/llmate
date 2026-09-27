@@ -1,11 +1,12 @@
 package models
 
 type DashboardStats struct {
-	TotalRequests  int             `json:"total_requests"`
-	AvgLatencyMs   float64         `json:"avg_latency_ms"`
-	ErrorRate      float64         `json:"error_rate"`
-	ByModel        []ModelStats    `json:"by_model"`
-	ByProvider     []ProviderStats `json:"by_provider"`
+	TotalRequests int             `json:"total_requests"`
+	AvgLatencyMs  float64         `json:"avg_latency_ms"`
+	ErrorRate     float64         `json:"error_rate"`
+	ByModel       []ModelStats    `json:"by_model"`
+	ByProvider    []ProviderStats `json:"by_provider"`
+	ByAPIKey      []APIKeyStats   `json:"by_api_key"`
 }
 
 // LifetimeCost is the all-time estimated spend derived from request logs.
@@ -21,11 +22,11 @@ type LifetimeCost struct {
 }
 
 type ModelStats struct {
-	Model         string  `json:"model"`
-	RequestCount  int     `json:"request_count"`
-	AvgLatencyMs  float64 `json:"avg_latency_ms"`
-	ErrorCount    int     `json:"error_count"`
-	TotalTokens   int     `json:"total_tokens"`
+	Model        string  `json:"model"`
+	RequestCount int     `json:"request_count"`
+	AvgLatencyMs float64 `json:"avg_latency_ms"`
+	ErrorCount   int     `json:"error_count"`
+	TotalTokens  int     `json:"total_tokens"`
 }
 
 type ProviderStats struct {
@@ -34,6 +35,16 @@ type ProviderStats struct {
 	RequestCount int     `json:"request_count"`
 	AvgLatencyMs float64 `json:"avg_latency_ms"`
 	ErrorCount   int     `json:"error_count"`
+}
+
+// APIKeyStats is one row of the admin dashboard breakdown by API key.
+type APIKeyStats struct {
+	APIKeyID     string  `json:"api_key_id"`
+	APIKeyName   string  `json:"api_key_name"`
+	RequestCount int     `json:"request_count"`
+	AvgLatencyMs float64 `json:"avg_latency_ms"`
+	ErrorCount   int     `json:"error_count"`
+	TotalTokens  int     `json:"total_tokens"`
 }
 
 // TimeSeriesPoint holds aggregated metrics for a single time bucket.

@@ -107,7 +107,7 @@ func main() {
 	}
 
 	queryWorker := admin.NewQueryWorker(store, 32)
-	proxyHandler := proxy.NewHandler(smartRouter, metricsCollector, routingCatalog, configSnap, httpClient)
+	proxyHandler := proxy.NewHandler(smartRouter, metricsCollector, routingCatalog, configSnap, httpClient, store)
 	adminHandler := admin.NewHandler(store, admin.HandlerConfig{
 		OnHTTPIdleConnTimeoutSaved: func(sec int) {
 			outboundPool.ApplyIdleConnTimeout(time.Duration(sec) * time.Second)
@@ -115,6 +115,7 @@ func main() {
 		},
 		OnRoutingChanged: reloadRouting,
 		OnConfigChanged:  reloadConfig,
+		AccessKey:        cfg.AccessKey,
 	}, statsAcc, queryWorker)
 	// Share a single in-flight registry between proxy tracking and admin reporting.
 	activeReg := proxy.NewActiveRegistry()
@@ -129,29 +130,45 @@ func main() {
 	r.Use(middleware.Logging(logger))
 	r.Use(auth.CORSMiddleware())
 
-	r.Post("/v1/chat/completions", proxyHandler.HandleChatCompletions)
-	r.Post("/v1/completions", proxyHandler.HandleCompletions)
-	r.Post("/v1/embeddings", proxyHandler.HandleEmbeddings)
-	r.Post("/v1/images/generations", proxyHandler.HandleImageGenerations)
-	r.Post("/v1/audio/speech", proxyHandler.HandleAudioSpeech)
-	r.Post("/v1/audio/transcriptions", proxyHandler.HandleAudioTranscriptions)
+	r.Post("/v1/chat/completions", proxyHandler.RequireAPIKey(proxyHandler.HandleChatCompletions))
+	r.Post("/v1/completions", proxyHandler.RequireAPIKey(proxyHandler.HandleCompletions))
+	r.Post("/v1/embeddings", proxyHandler.RequireAPIKey(proxyHandler.HandleEmbeddings))
+	r.Post("/v1/images/generations", proxyHandler.RequireAPIKey(proxyHandler.HandleImageGenerations))
+	r.Post("/v1/audio/speech", proxyHandler.RequireAPIKey(proxyHandler.HandleAudioSpeech))
+	r.Post("/v1/audio/transcriptions", proxyHandler.RequireAPIKey(proxyHandler.HandleAudioTranscriptions))
 	r.Get("/v1/models", proxyHandler.HandleListModels)
 	r.Get("/v1/models/{model}", proxyHandler.HandleGetModel)
 	r.Post("/api/show", proxyHandler.HandleShow)
 
+	// Admin-only API, protected by the ACCESS_KEY middleware. It is built as a
+	// separate router (middleware registered before routes, as chi requires)
+	// and mounted under /admin alongside the open auth/usage routes.
+	adminAPI := chi.NewRouter()
+	adminAPI.Use(auth.AccessKeyMiddleware(cfg.AccessKey))
+	adminAPI.Post("/providers/{id}/discover", onboardHandler.HandleDiscover)
+	adminAPI.Post("/providers/{id}/confirm", onboardHandler.HandleConfirm)
+	adminAPI.Mount("/", adminHandler.Routes())
+
 	r.Route("/admin", func(r chi.Router) {
-		r.Use(auth.AccessKeyMiddleware(cfg.AccessKey))
-		r.Post("/providers/{id}/discover", onboardHandler.HandleDiscover)
-		r.Post("/providers/{id}/confirm", onboardHandler.HandleConfirm)
-		r.Mount("/", adminHandler.Routes())
+		// Open routes reachable with either an ACCESS_KEY or a valid API key.
+		r.Post("/auth", adminHandler.HandleAuth)
+		r.Get("/me", adminHandler.HandleMe)
+		r.Get("/me/usage", adminHandler.HandleMyUsage)
+		r.Get("/me/usage/timeseries", adminHandler.HandleMyTimeSeries)
+		r.Get("/me/stats", adminHandler.HandleMyStats)
+		r.Get("/me/stats/timeseries", adminHandler.HandleMyStatsTimeSeries)
+		r.Get("/me/stats/lifetime", adminHandler.HandleMyLifetimeCost)
+
+		// Admin-only routes live in a separate middleware-protected router.
+		r.Mount("/", adminAPI)
 	})
 
-	r.Post("/chat/completions", proxyHandler.HandleChatCompletions)
-	r.Post("/completions", proxyHandler.HandleCompletions)
-	r.Post("/embeddings", proxyHandler.HandleEmbeddings)
-	r.Post("/images/generations", proxyHandler.HandleImageGenerations)
-	r.Post("/audio/speech", proxyHandler.HandleAudioSpeech)
-	r.Post("/audio/transcriptions", proxyHandler.HandleAudioTranscriptions)
+	r.Post("/chat/completions", proxyHandler.RequireAPIKey(proxyHandler.HandleChatCompletions))
+	r.Post("/completions", proxyHandler.RequireAPIKey(proxyHandler.HandleCompletions))
+	r.Post("/embeddings", proxyHandler.RequireAPIKey(proxyHandler.HandleEmbeddings))
+	r.Post("/images/generations", proxyHandler.RequireAPIKey(proxyHandler.HandleImageGenerations))
+	r.Post("/audio/speech", proxyHandler.RequireAPIKey(proxyHandler.HandleAudioSpeech))
+	r.Post("/audio/transcriptions", proxyHandler.RequireAPIKey(proxyHandler.HandleAudioTranscriptions))
 	r.Get("/models", proxyHandler.HandleListModels)
 	r.Get("/models/{model}", proxyHandler.HandleGetModel)
 

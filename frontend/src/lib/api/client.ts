@@ -15,7 +15,12 @@ import type {
   RequestLog,
   StatsWindow,
   StreamingLog,
-  TimeSeriesPoint
+  TimeSeriesPoint,
+  APIKey,
+  APIKeyCreateInput,
+  APIKeyUpdateInput,
+  APIKeyUsage,
+  ModelStats
 } from '$lib/types';
 
 function statsWindowParams(window?: string | StatsWindow): URLSearchParams {
@@ -45,18 +50,59 @@ class ApiClient {
     }
   }
 
-  setAccessKey(key: string): void {
+  async setAccessKey(key: string): Promise<void> {
+    const previous = this.accessKey;
     this.accessKey = key;
-    localStorage.setItem('access_key', key);
+    try {
+      const me = await this.getMe({ logoutOn401: false });
+      if (me.role !== 'admin' && me.role !== 'key') {
+        throw new Error('Could not determine access');
+      }
+      localStorage.setItem('access_key', key);
+      localStorage.setItem('access_role', me.role);
+    } catch (err) {
+      this.accessKey = previous;
+      throw err instanceof Error ? err : new Error('Failed to sign in');
+    }
+  }
+
+  rememberRole(role: 'admin' | 'key'): void {
+    localStorage.setItem('access_role', role);
   }
 
   clearAccessKey(): void {
     this.accessKey = null;
     localStorage.removeItem('access_key');
+    localStorage.removeItem('access_role');
   }
 
   isAuthenticated(): boolean {
     return !!this.accessKey;
+  }
+
+  getAccessKey(): string | null {
+    return this.accessKey;
+  }
+
+  getRole(): 'admin' | 'key' | null {
+    if (typeof localStorage === 'undefined') return null;
+    const role = localStorage.getItem('access_role');
+    if (role === 'admin' || role === 'key') return role;
+    return null;
+  }
+
+  async getMe(opts?: { logoutOn401?: boolean }): Promise<{
+    role: 'admin' | 'key';
+    api_key_id?: string;
+    api_key_name?: string;
+  }> {
+    return this.request<{ role: 'admin' | 'key'; api_key_id?: string; api_key_name?: string }>(
+      'GET',
+      '/me',
+      undefined,
+      undefined,
+      opts
+    );
   }
 
   private headers(key?: string): Record<string, string> {
@@ -66,11 +112,21 @@ class ApiClient {
     return h;
   }
 
+  /** End the browser session on 401 for calls the stored role is allowed to make. */
+  private shouldEndSession(path: string): boolean {
+    const p = path.split('?')[0];
+    const role = this.getRole();
+    if (p === '/me') return true;
+    if (p.startsWith('/me/usage') || p.startsWith('/me/stats')) return role === 'key';
+    return role === 'admin';
+  }
+
   private async request<T>(
     method: string,
     path: string,
     body?: unknown,
-    authKey?: string
+    authKey?: string,
+    opts?: { logoutOn401?: boolean }
   ): Promise<T> {
     const headers: Record<string, string> = this.headers(authKey);
     if (body !== undefined) {
@@ -84,8 +140,12 @@ class ApiClient {
     });
 
     if (res.status === 401) {
-      this.clearAccessKey();
-      window.location.href = '/login';
+      if (opts?.logoutOn401 !== false && this.shouldEndSession(path)) {
+        this.clearAccessKey();
+        if (typeof window !== 'undefined' && !window.location.pathname.startsWith('/login')) {
+          window.location.assign('/login');
+        }
+      }
       throw new Error('Unauthorized');
     }
 
@@ -225,6 +285,41 @@ class ApiClient {
     return this.request<LifetimeCost>('GET', '/stats/lifetime');
   }
 
+  /** Dashboard stats for the API key authenticating this call. Provider fields are omitted. */
+  async getMyDashboardStats(window?: string | StatsWindow): Promise<DashboardStats> {
+    const params = statsWindowParams(window);
+    const qs = params.toString() ? `?${params}` : '';
+    const data = await this.request<Partial<DashboardStats>>('GET', `/me/stats${qs}`);
+    return {
+      total_requests: data.total_requests ?? 0,
+      avg_latency_ms: data.avg_latency_ms ?? 0,
+      error_rate: data.error_rate ?? 0,
+      active_requests: 0,
+      by_model: data.by_model ?? [],
+      by_provider: [],
+      by_api_key: []
+    };
+  }
+
+  /** Time-bucketed usage for the API key authenticating this call. */
+  async getMyDashboardTimeSeries(
+    window: string | StatsWindow,
+    granularity: 'hour' | 'day'
+  ): Promise<{ points: TimeSeriesPoint[] }> {
+    const params = statsWindowParams(window);
+    params.set('granularity', granularity);
+    const data = await this.request<{ points?: TimeSeriesPoint[] }>(
+      'GET',
+      `/me/stats/timeseries?${params}`
+    );
+    return { points: data.points ?? [] };
+  }
+
+  /** All-time spend for the API key authenticating this call. */
+  async getMyLifetimeCost(): Promise<LifetimeCost> {
+    return this.request<LifetimeCost>('GET', '/me/stats/lifetime');
+  }
+
   /** Returns a single request log including request/response bodies. */
   async getLog(id: string): Promise<{ log: RequestLog }> {
     return this.request<{ log: RequestLog }>('GET', `/logs/${encodeURIComponent(id)}`);
@@ -289,6 +384,57 @@ class ApiClient {
       `/logs/${encodeURIComponent(requestLogId)}/streaming`
     );
     return data.streaming_logs;
+  }
+
+  async listAPIKeys(): Promise<APIKey[]> {
+    const data = await this.request<{ keys: APIKey[] }>('GET', '/keys');
+    return data.keys;
+  }
+
+  async createAPIKey(input: APIKeyCreateInput): Promise<{ api_key: APIKey; key: string }> {
+    const data = await this.request<{ api_key: APIKey; key: string }>('POST', '/keys', input);
+    return data;
+  }
+
+  async updateAPIKey(id: string, input: APIKeyUpdateInput): Promise<APIKey> {
+    const data = await this.request<{ api_key: APIKey }>('PUT', `/keys/${encodeURIComponent(id)}`, input);
+    return data.api_key;
+  }
+
+  async deleteAPIKey(id: string): Promise<void> {
+    await this.request<void>('DELETE', `/keys/${encodeURIComponent(id)}`);
+  }
+
+  async getUsage(): Promise<APIKeyUsage[]> {
+    const data = await this.request<{ usage: APIKeyUsage[] }>('GET', '/usage');
+    return data.usage;
+  }
+
+  /** Usage for the API key that authenticates this call. */
+  async getMyUsage(
+    apiKey?: string
+  ): Promise<{ usage: APIKeyUsage; api_key: string; by_model: ModelStats[] }> {
+    const data = await this.request<{ usage: APIKeyUsage; api_key: string; by_model?: ModelStats[] }>(
+      'GET',
+      '/me/usage',
+      undefined,
+      apiKey
+    );
+    return { usage: data.usage, api_key: data.api_key, by_model: data.by_model ?? [] };
+  }
+
+  /** Time-bucketed usage for the API key that authenticates this call. */
+  async getMyTimeSeries(
+    since: string,
+    until: string,
+    granularity: 'hour' | 'day'
+  ): Promise<{ points: TimeSeriesPoint[] }> {
+    const params = new URLSearchParams({ since, until, granularity });
+    const data = await this.request<{ points?: TimeSeriesPoint[] }>(
+      'GET',
+      `/me/usage/timeseries?${params}`
+    );
+    return { points: data.points ?? [] };
   }
 }
 

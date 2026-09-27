@@ -36,13 +36,31 @@ const (
 )
 
 func (s *SQLiteStore) GetDashboardStats(ctx context.Context, since, until time.Time) (*models.DashboardStats, error) {
+	return s.dashboardStats(ctx, since, until, "")
+}
+
+// GetDashboardStatsForAPIKey aggregates dashboard stats for a single API key.
+// Provider breakdown is omitted.
+func (s *SQLiteStore) GetDashboardStatsForAPIKey(ctx context.Context, apiKeyID string, since, until time.Time) (*models.DashboardStats, error) {
+	return s.dashboardStats(ctx, since, until, apiKeyID)
+}
+
+func (s *SQLiteStore) dashboardStats(ctx context.Context, since, until time.Time, apiKeyID string) (*models.DashboardStats, error) {
 	stats := &models.DashboardStats{
 		ByModel:    []models.ModelStats{},
 		ByProvider: []models.ProviderStats{},
+		ByAPIKey:   []models.APIKeyStats{},
+	}
+
+	clause := "timestamp >= ? AND timestamp <= ?"
+	args := []any{since, until}
+	if apiKeyID != "" {
+		clause += " AND api_key_id = ?"
+		args = append(args, apiKeyID)
 	}
 
 	if err := s.db.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM request_logs WHERE timestamp >= ? AND timestamp <= ?`, since, until,
+		`SELECT COUNT(*) FROM request_logs WHERE `+clause, args...,
 	).Scan(&stats.TotalRequests); err != nil {
 		return nil, fmt.Errorf("dashboard stats total requests: %w", err)
 	}
@@ -50,7 +68,7 @@ func (s *SQLiteStore) GetDashboardStats(ctx context.Context, since, until time.T
 	if stats.TotalRequests > 0 {
 		var avgLatency sql.NullFloat64
 		if err := s.db.QueryRowContext(ctx,
-			`SELECT AVG(CAST(total_time_ms AS REAL)) FROM request_logs WHERE timestamp >= ? AND timestamp <= ?`, since, until,
+			`SELECT AVG(CAST(total_time_ms AS REAL)) FROM request_logs WHERE `+clause, args...,
 		).Scan(&avgLatency); err != nil {
 			return nil, fmt.Errorf("dashboard stats avg latency: %w", err)
 		}
@@ -60,7 +78,7 @@ func (s *SQLiteStore) GetDashboardStats(ctx context.Context, since, until time.T
 
 		var errorCount sql.NullInt64
 		if err := s.db.QueryRowContext(ctx,
-			`SELECT SUM(CASE WHEN status_code >= 400 THEN 1 ELSE 0 END) FROM request_logs WHERE timestamp >= ? AND timestamp <= ?`, since, until,
+			`SELECT SUM(CASE WHEN status_code >= 400 THEN 1 ELSE 0 END) FROM request_logs WHERE `+clause, args...,
 		).Scan(&errorCount); err != nil {
 			return nil, fmt.Errorf("dashboard stats error count: %w", err)
 		}
@@ -77,10 +95,10 @@ func (s *SQLiteStore) GetDashboardStats(ctx context.Context, since, until time.T
 			SUM(CASE WHEN status_code >= 400 THEN 1 ELSE 0 END) AS error_count,
 			COALESCE(SUM(COALESCE(total_tokens, 0)), 0) AS total_tokens
 		FROM request_logs
-		WHERE timestamp >= ? AND timestamp <= ?
+		WHERE `+clause+`
 		GROUP BY COALESCE(NULLIF(resolved_model, ''), requested_model, '')
 		ORDER BY request_count DESC
-	`, since, until)
+	`, args...)
 	if err != nil {
 		return nil, fmt.Errorf("dashboard stats by model: %w", err)
 	}
@@ -99,6 +117,11 @@ func (s *SQLiteStore) GetDashboardStats(ctx context.Context, since, until time.T
 	}
 	if err := modelRows.Err(); err != nil {
 		return nil, fmt.Errorf("dashboard stats by model rows: %w", err)
+	}
+
+	// Key-scoped stats must not include provider names.
+	if apiKeyID != "" {
+		return stats, nil
 	}
 
 	provRows, err := s.db.QueryContext(ctx, `
@@ -134,6 +157,43 @@ func (s *SQLiteStore) GetDashboardStats(ctx context.Context, since, until time.T
 		return nil, fmt.Errorf("dashboard stats by provider rows: %w", err)
 	}
 
+	keyRows, err := s.db.QueryContext(ctx, `
+		SELECT
+			COALESCE(r.api_key_id, '') AS api_key_id,
+			CASE
+				WHEN COALESCE(r.api_key_id, '') = '' THEN 'No API key'
+				ELSE COALESCE(NULLIF(k.name, ''), NULLIF(r.api_key_name, ''), r.api_key_id)
+			END AS api_key_name,
+			COUNT(*) AS request_count,
+			AVG(CAST(r.total_time_ms AS REAL)) AS avg_latency_ms,
+			SUM(CASE WHEN r.status_code >= 400 THEN 1 ELSE 0 END) AS error_count,
+			COALESCE(SUM(COALESCE(r.total_tokens, 0)), 0) AS total_tokens
+		FROM request_logs r
+		LEFT JOIN api_keys k ON k.id = r.api_key_id
+		WHERE r.timestamp >= ? AND r.timestamp <= ?
+		GROUP BY COALESCE(r.api_key_id, '')
+		ORDER BY request_count DESC
+	`, since, until)
+	if err != nil {
+		return nil, fmt.Errorf("dashboard stats by api key: %w", err)
+	}
+	defer keyRows.Close()
+
+	for keyRows.Next() {
+		var ks models.APIKeyStats
+		var avgLatency sql.NullFloat64
+		if err := keyRows.Scan(&ks.APIKeyID, &ks.APIKeyName, &ks.RequestCount, &avgLatency, &ks.ErrorCount, &ks.TotalTokens); err != nil {
+			return nil, fmt.Errorf("dashboard stats by api key scan: %w", err)
+		}
+		if avgLatency.Valid {
+			ks.AvgLatencyMs = avgLatency.Float64
+		}
+		stats.ByAPIKey = append(stats.ByAPIKey, ks)
+	}
+	if err := keyRows.Err(); err != nil {
+		return nil, fmt.Errorf("dashboard stats by api key rows: %w", err)
+	}
+
 	return stats, nil
 }
 
@@ -141,6 +201,16 @@ func (s *SQLiteStore) GetDashboardStats(ctx context.Context, since, until time.T
 // granularity must be "hour" or "day".
 // Hourly buckets use format "2006-01-02T15:00:00"; daily buckets use "2006-01-02".
 func (s *SQLiteStore) GetTimeSeries(ctx context.Context, since, until time.Time, granularity string) ([]models.TimeSeriesPoint, error) {
+	return s.timeSeries(ctx, since, until, granularity, "")
+}
+
+// TimeSeriesByAPIKey returns the same time-bucketed metrics as GetTimeSeries,
+// restricted to request_logs stamped with the given API key id.
+func (s *SQLiteStore) TimeSeriesByAPIKey(ctx context.Context, apiKeyID string, since, until time.Time, granularity string) ([]models.TimeSeriesPoint, error) {
+	return s.timeSeries(ctx, since, until, granularity, apiKeyID)
+}
+
+func (s *SQLiteStore) timeSeries(ctx context.Context, since, until time.Time, granularity, apiKeyID string) ([]models.TimeSeriesPoint, error) {
 	// substr(timestamp, 1, 19) extracts "YYYY-MM-DD HH:MM:SS" which SQLite's
 	// date functions always parse correctly, regardless of what follows (timezone
 	// offset variants, fractional seconds, corrupt "++" sequences from old
@@ -153,6 +223,13 @@ func (s *SQLiteStore) GetTimeSeries(ctx context.Context, since, until time.Time,
 		bucketExpr = `strftime('%Y-%m-%d', substr(timestamp, 1, 10))`
 	default:
 		return nil, fmt.Errorf("invalid granularity %q: must be hour or day", granularity)
+	}
+
+	apiKeyClause := ""
+	args := []interface{}{since, until}
+	if apiKeyID != "" {
+		apiKeyClause = ` AND r.api_key_id = ?`
+		args = append(args, apiKeyID)
 	}
 
 	rows, err := s.db.QueryContext(ctx, `
@@ -172,10 +249,10 @@ func (s *SQLiteStore) GetTimeSeries(ctx context.Context, since, until time.Time,
 			COALESCE(SUM(COALESCE(cached_tokens, 0)), 0) AS cached_tokens
 		FROM request_logs r
 		LEFT JOIN provider_models pm ON r.provider_id = pm.provider_id AND r.resolved_model = pm.model_id
-		WHERE r.timestamp >= ? AND r.timestamp <= ?
+		WHERE r.timestamp >= ? AND r.timestamp <= ?`+apiKeyClause+`
 		GROUP BY bucket
 		ORDER BY bucket ASC
-	`, since, until)
+	`, args...)
 	if err != nil {
 		return nil, fmt.Errorf("get time series: %w", err)
 	}
@@ -221,8 +298,23 @@ func (s *SQLiteStore) GetTimeSeries(ctx context.Context, since, until time.Time,
 }
 
 func (s *SQLiteStore) GetLifetimeCost(ctx context.Context) (*models.LifetimeCost, error) {
+	return s.lifetimeCost(ctx, "")
+}
+
+// GetLifetimeCostForAPIKey is GetLifetimeCost restricted to one API key.
+func (s *SQLiteStore) GetLifetimeCostForAPIKey(ctx context.Context, apiKeyID string) (*models.LifetimeCost, error) {
+	return s.lifetimeCost(ctx, apiKeyID)
+}
+
+func (s *SQLiteStore) lifetimeCost(ctx context.Context, apiKeyID string) (*models.LifetimeCost, error) {
 	out := &models.LifetimeCost{}
 	var first, last nullTimeScanner
+	where := ""
+	var args []any
+	if apiKeyID != "" {
+		where = " WHERE r.api_key_id = ?"
+		args = append(args, apiKeyID)
+	}
 	err := s.db.QueryRowContext(ctx, `
 		SELECT
 			COUNT(*) AS total_requests,
@@ -233,8 +325,7 @@ func (s *SQLiteStore) GetLifetimeCost(ctx context.Context) (*models.LifetimeCost
 			MIN(r.timestamp) AS first_request_at,
 			MAX(r.timestamp) AS last_request_at
 		FROM request_logs r
-		LEFT JOIN provider_models pm ON r.provider_id = pm.provider_id AND r.resolved_model = pm.model_id
-	`).Scan(
+		LEFT JOIN provider_models pm ON r.provider_id = pm.provider_id AND r.resolved_model = pm.model_id`+where, args...).Scan(
 		&out.TotalRequests,
 		&out.TotalTokens,
 		&out.InputCostUSD,

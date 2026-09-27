@@ -101,10 +101,19 @@ func (m *mockStore) GetProviderModelCosts(_ context.Context, _, _ string) (*mode
 func (m *mockStore) GetDashboardStats(_ context.Context, _, _ time.Time) (*models.DashboardStats, error) {
 	return nil, nil
 }
+func (m *mockStore) GetDashboardStatsForAPIKey(_ context.Context, _ string, _, _ time.Time) (*models.DashboardStats, error) {
+	return nil, nil
+}
 func (m *mockStore) GetTimeSeries(_ context.Context, _, _ time.Time, _ string) ([]models.TimeSeriesPoint, error) {
 	return nil, nil
 }
+func (m *mockStore) TimeSeriesByAPIKey(_ context.Context, _ string, _, _ time.Time, _ string) ([]models.TimeSeriesPoint, error) {
+	return nil, nil
+}
 func (m *mockStore) GetLifetimeCost(_ context.Context) (*models.LifetimeCost, error) {
+	return nil, nil
+}
+func (m *mockStore) GetLifetimeCostForAPIKey(_ context.Context, _ string) (*models.LifetimeCost, error) {
 	return nil, nil
 }
 func (m *mockStore) GetAllConfig(_ context.Context) (map[string]string, error) { return map[string]string{}, nil }
@@ -125,6 +134,26 @@ func (m *mockStore) PurgeRequestLogResponseBodiesOlderThan(_ context.Context, _ 
 	return 0, nil
 }
 func (m *mockStore) LoadRoutingData(_ context.Context) (*models.RoutingData, error) { return &models.RoutingData{}, nil }
+func (m *mockStore) CreateAPIKey(_ context.Context, _ *models.APIKey) error             { return nil }
+func (m *mockStore) GetAPIKeyByHash(_ context.Context, _ string) (*models.APIKey, error) {
+	return nil, nil
+}
+func (m *mockStore) GetAPIKey(_ context.Context, _ string) (*models.APIKey, error) { return nil, nil }
+func (m *mockStore) ListAPIKeys(_ context.Context) ([]models.APIKey, error) { return nil, nil }
+func (m *mockStore) UpdateAPIKey(_ context.Context, _ *models.APIKey) error  { return nil }
+func (m *mockStore) DeleteAPIKey(_ context.Context, _ string) error          { return nil }
+func (m *mockStore) TouchAPIKeyLastUsed(_ context.Context, _ string, _ time.Time) error {
+	return nil
+}
+func (m *mockStore) QueryLogsByAPIKey(_ context.Context, _ string, _ models.LogFilter) ([]models.RequestLog, int, error) {
+	return nil, 0, nil
+}
+func (m *mockStore) UsageByAPIKey(_ context.Context, _, _ time.Time) ([]models.APIKeyUsage, error) {
+	return nil, nil
+}
+func (m *mockStore) UsageByAPIKeyModel(_ context.Context, _ string, _, _ time.Time) ([]models.ModelStats, error) {
+	return nil, nil
+}
 func (m *mockStore) Close() error { return nil }
 
 // mockBreaker records ReportSuccess and ReportFailure calls per provider ID.

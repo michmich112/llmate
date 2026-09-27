@@ -25,8 +25,10 @@
         error = 'Invalid access key';
         return;
       }
-      api.setAccessKey(key);
+      await api.setAccessKey(key);
       await goto('/');
+    } catch (e) {
+      error = e instanceof Error ? e.message : 'Failed to sign in';
     } finally {
       loading = false;
     }

@@ -23,7 +23,7 @@ func ptrInt(v int) *int { return &v }
 func newTestHandler(router *mockRouter, metrics *mockMetrics) *Handler {
 	cat := NewRoutingCatalogFromData(&models.RoutingData{})
 	cfg := NewConfigSnapshot(&mockStore{})
-	return NewHandler(router, metrics, cat, cfg, nil)
+	return NewHandler(router, metrics, cat, cfg, nil, &mockStore{})
 }
 
 // ---------------------------------------------------------------------------
@@ -156,10 +156,19 @@ func (s *mockStore) GetProviderModelCosts(_ context.Context, _, _ string) (*mode
 func (s *mockStore) GetDashboardStats(_ context.Context, _, _ time.Time) (*models.DashboardStats, error) {
 	return nil, nil
 }
+func (s *mockStore) GetDashboardStatsForAPIKey(_ context.Context, _ string, _, _ time.Time) (*models.DashboardStats, error) {
+	return nil, nil
+}
 func (s *mockStore) GetTimeSeries(_ context.Context, _, _ time.Time, _ string) ([]models.TimeSeriesPoint, error) {
 	return nil, nil
 }
+func (s *mockStore) TimeSeriesByAPIKey(_ context.Context, _ string, _, _ time.Time, _ string) ([]models.TimeSeriesPoint, error) {
+	return nil, nil
+}
 func (s *mockStore) GetLifetimeCost(_ context.Context) (*models.LifetimeCost, error) {
+	return nil, nil
+}
+func (s *mockStore) GetLifetimeCostForAPIKey(_ context.Context, _ string) (*models.LifetimeCost, error) {
 	return nil, nil
 }
 func (s *mockStore) GetAllConfig(_ context.Context) (map[string]string, error) { return map[string]string{}, nil }
@@ -180,6 +189,26 @@ func (s *mockStore) PurgeRequestLogResponseBodiesOlderThan(_ context.Context, _ 
 	return 0, nil
 }
 func (s *mockStore) UpdateProviderHealth(_ context.Context, _ string, _ bool) error { return nil }
+func (s *mockStore) CreateAPIKey(_ context.Context, _ *models.APIKey) error             { return nil }
+func (s *mockStore) GetAPIKeyByHash(_ context.Context, _ string) (*models.APIKey, error) {
+	return nil, nil
+}
+func (s *mockStore) GetAPIKey(_ context.Context, _ string) (*models.APIKey, error) { return nil, nil }
+func (s *mockStore) ListAPIKeys(_ context.Context) ([]models.APIKey, error) { return nil, nil }
+func (s *mockStore) UpdateAPIKey(_ context.Context, _ *models.APIKey) error  { return nil }
+func (s *mockStore) DeleteAPIKey(_ context.Context, _ string) error          { return nil }
+func (s *mockStore) TouchAPIKeyLastUsed(_ context.Context, _ string, _ time.Time) error {
+	return nil
+}
+func (s *mockStore) QueryLogsByAPIKey(_ context.Context, _ string, _ models.LogFilter) ([]models.RequestLog, int, error) {
+	return nil, 0, nil
+}
+func (s *mockStore) UsageByAPIKey(_ context.Context, _, _ time.Time) ([]models.APIKeyUsage, error) {
+	return nil, nil
+}
+func (s *mockStore) UsageByAPIKeyModel(_ context.Context, _ string, _, _ time.Time) ([]models.ModelStats, error) {
+	return nil, nil
+}
 func (s *mockStore) LoadRoutingData(_ context.Context) (*models.RoutingData, error) { return &models.RoutingData{}, nil }
 func (s *mockStore) Close() error                                                    { return nil }
 
@@ -780,7 +809,7 @@ func TestHandleListModels(t *testing.T) {
 			{ID: "a2", Alias: "disabled-alias", ModelID: "gpt-3.5-turbo", ProviderID: "p1", IsEnabled: false},
 		},
 	})
-	h := NewHandler(&mockRouter{}, &mockMetrics{}, cat, NewConfigSnapshot(&mockStore{}), nil)
+	h := NewHandler(&mockRouter{}, &mockMetrics{}, cat, NewConfigSnapshot(&mockStore{}), nil, &mockStore{})
 
 	req := httptest.NewRequest("GET", "/v1/models", nil)
 	rr := httptest.NewRecorder()
@@ -851,7 +880,7 @@ func TestHandleListModels_ExcludesUnavailable(t *testing.T) {
 			{ID: "pm2", ProviderID: "p1", ModelID: "hidden-model", IsAvailable: false},
 		},
 	})
-	h := NewHandler(&mockRouter{}, &mockMetrics{}, cat, NewConfigSnapshot(&mockStore{}), nil)
+	h := NewHandler(&mockRouter{}, &mockMetrics{}, cat, NewConfigSnapshot(&mockStore{}), nil, &mockStore{})
 
 	req := httptest.NewRequest("GET", "/v1/models", nil)
 	rr := httptest.NewRecorder()
@@ -882,7 +911,7 @@ func TestHandleListModels_IncludesManuallyAvailableWithoutHealthyProvider(t *tes
 			{ID: "pm1", ProviderID: "p1", ModelID: "manual-model", IsAvailable: true},
 		},
 	})
-	h := NewHandler(&mockRouter{}, &mockMetrics{}, cat, NewConfigSnapshot(&mockStore{}), nil)
+	h := NewHandler(&mockRouter{}, &mockMetrics{}, cat, NewConfigSnapshot(&mockStore{}), nil, &mockStore{})
 
 	req := httptest.NewRequest("GET", "/v1/models", nil)
 	rr := httptest.NewRecorder()
@@ -1017,7 +1046,7 @@ func TestHandleGetModel(t *testing.T) {
 		Providers: []models.Provider{{ID: "p1", Name: "p1", IsHealthy: true}},
 		Models: []models.ProviderModel{{ProviderID: "p1", ModelID: "gpt-4o", IsAvailable: true, MaxContext: ptrInt(128000)}},
 	})
-	h := NewHandler(&mockRouter{}, &mockMetrics{}, cat, NewConfigSnapshot(&mockStore{}), nil)
+	h := NewHandler(&mockRouter{}, &mockMetrics{}, cat, NewConfigSnapshot(&mockStore{}), nil, &mockStore{})
 
 	r := chi.NewRouter()
 	r.Get("/v1/models/{model}", h.HandleGetModel)

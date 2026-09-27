@@ -7,10 +7,11 @@
     "build": "vite build",
     "preview": "vite preview",
     "check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
-    "e2e": "playwright test",
-    "test:e2e": "playwright test"
+    "e2e:cucumber": "bash e2e/cucumber-run.sh",
+    "test:e2e": "npm run e2e:cucumber"
   },
   "devDependencies": {
+    "@cucumber/cucumber": "^13.2.1",
     "@playwright/test": "^1.63.0",
     "@sveltejs/adapter-static": "^3.0.0",
     "@sveltejs/kit": "^2.0.0",

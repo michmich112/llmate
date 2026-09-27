@@ -1,7 +1,8 @@
 <script lang="ts">
   import { onMount, untrack } from 'svelte';
+  import { page } from '$app/state';
   import { api } from '$lib/api/client';
-  import type { DashboardStats, LifetimeCost, Provider, TimeSeriesPoint } from '$lib/types';
+  import type { DashboardStats, LifetimeCost, Provider, StatsWindow, TimeSeriesPoint } from '$lib/types';
   import { Card, CardHeader, CardTitle, CardContent } from '$lib/components/ui/card';
   import { Button } from '$lib/components/ui/button';
   import { Input } from '$lib/components/ui/input';
@@ -17,7 +18,8 @@
     error_rate: 0,
     active_requests: 0,
     by_model: [],
-    by_provider: []
+    by_provider: [],
+    by_api_key: []
   });
 
   let stats = $state<DashboardStats | null>(null);
@@ -44,6 +46,21 @@
   let chartCanvas = $state<HTMLCanvasElement | null>(null);
   let chartInstance: Chart | null = null;
   let breakdownExpanded = $state(false);
+  let isKeyUser = $derived(page.data.role === 'key');
+
+  function bucketInstant(bucket: string): Date {
+    if (bucket.includes('T')) {
+      return new Date(bucket.endsWith('Z') ? bucket : `${bucket}Z`);
+    }
+    return new Date(`${bucket}T00:00:00Z`);
+  }
+
+  function spansLocalDays(points: TimeSeriesPoint[]): boolean {
+    if (points.length < 2) return false;
+    const first = bucketInstant(points[0].bucket);
+    const last = bucketInstant(points[points.length - 1].bucket);
+    return first.toLocaleDateString() !== last.toLocaleDateString();
+  }
 
   const modeOptions: { id: TimeMode; label: string }[] = [
     { id: '24h', label: '24h' },
@@ -108,16 +125,24 @@
     fetchKey++;
   }
 
-  async function fetchData() {
+  async function fetchData(keyUser: boolean) {
     loading = true;
     error = null;
     const mode = timeMode;
     const fromLocal = appliedFrom;
     const toLocal = appliedTo;
+    const loadStats = (window?: string | StatsWindow) =>
+      keyUser ? api.getMyDashboardStats(window) : api.getStats(window);
+    const loadSeries = (window: string | StatsWindow, granularity: 'hour' | 'day') =>
+      keyUser ? api.getMyDashboardTimeSeries(window, granularity) : api.getTimeSeries(window, granularity);
+    const loadProviders = () => (keyUser ? Promise.resolve([] as Provider[]) : api.listProviders());
 
     try {
       if (mode === 'lifetime') {
-        const [lifetime, p] = await Promise.all([api.getLifetimeCost(), api.listProviders()]);
+        const [lifetime, p] = await Promise.all([
+          keyUser ? api.getMyLifetimeCost() : api.getLifetimeCost(),
+          loadProviders()
+        ]);
         lifetimeCost = lifetime;
         providers = p;
 
@@ -125,8 +150,8 @@
           const window = { from: lifetime.first_request_at, to: new Date().toISOString() };
           const granularity = granularityForAbsolute(window.from, window.to);
           const [s, ts] = await Promise.all([
-            api.getStats(window),
-            api.getTimeSeries(window, granularity)
+            loadStats(window),
+            loadSeries(window, granularity)
           ]);
           stats = s;
           tsPoints = ts.points;
@@ -139,7 +164,7 @@
         if (!fromLocal || !toLocal) {
           stats = emptyStats();
           tsPoints = [];
-          providers = await api.listProviders();
+          providers = await loadProviders();
           return;
         }
         const from = datetimeLocalToISO(fromLocal);
@@ -147,9 +172,9 @@
         const window = { from, to };
         const granularity = granularityForAbsolute(from, to);
         const [s, p, ts] = await Promise.all([
-          api.getStats(window),
-          api.listProviders(),
-          api.getTimeSeries(window, granularity)
+          loadStats(window),
+          loadProviders(),
+          loadSeries(window, granularity)
         ]);
         stats = s;
         providers = p;
@@ -158,9 +183,9 @@
         lifetimeCost = null;
         const granularity = granularityForPreset(mode);
         const [s, p, ts] = await Promise.all([
-          api.getStats(mode),
-          api.listProviders(),
-          api.getTimeSeries(mode, granularity)
+          loadStats(mode),
+          loadProviders(),
+          loadSeries(mode, granularity)
         ]);
         stats = s;
         providers = p;
@@ -179,8 +204,10 @@
   // Refetch only when fetchKey changes (mode select, Apply, Refresh) — not on date keystrokes
   $effect(() => {
     fetchKey;
+    const role = page.data.role;
+    if (role !== 'admin' && role !== 'key') return;
     untrack(() => {
-      void fetchData();
+      void fetchData(role === 'key');
     });
   });
 
@@ -198,10 +225,13 @@
 
     chartInstance?.destroy();
 
+    const multiDay = spansLocalDays(points);
     const labels = points.map((p) => {
-      // Hourly: show HH:mm; daily: show MMM D
-      const d = new Date(p.bucket.includes('T') ? p.bucket + 'Z' : p.bucket + 'T00:00:00Z');
+      const d = bucketInstant(p.bucket);
       if (p.bucket.includes('T')) {
+        if (multiDay) {
+          return d.toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+        }
         return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
       }
       return d.toLocaleDateString([], { month: 'short', day: 'numeric' });
@@ -370,7 +400,7 @@
   );
 </script>
 
-<div class="space-y-6">
+<div class="space-y-6" data-testid="usage-dashboard">
   <div class="flex items-center justify-between">
     <h1 class="text-2xl font-bold tracking-tight">Dashboard</h1>
     <div class="flex items-center gap-2">
@@ -434,8 +464,10 @@
           <CardTitle class="text-sm font-medium text-muted-foreground">Total Requests</CardTitle>
         </CardHeader>
         <CardContent>
-          <p class="text-3xl font-bold">{stats.total_requests.toLocaleString()}</p>
-          <p class="mt-1 text-xs text-muted-foreground">{stats.active_requests} active right now</p>
+          <p class="text-3xl font-bold" data-testid="usage-metric-requests">{stats.total_requests.toLocaleString()}</p>
+          {#if !isKeyUser}
+            <p class="mt-1 text-xs text-muted-foreground">{stats.active_requests} active right now</p>
+          {/if}
         </CardContent>
       </Card>
 
@@ -472,7 +504,7 @@
             <p class="mt-1 text-xs text-muted-foreground">
               In ${lifetimeCost.input_cost_usd.toFixed(4)} · Out ${lifetimeCost.output_cost_usd.toFixed(4)} · Cached ${lifetimeCost.cached_cost_usd.toFixed(4)}
             </p>
-          {:else}
+          {:else if !isKeyUser}
             <p class="mt-1 text-xs text-muted-foreground">{activeProviders} healthy provider{activeProviders !== 1 ? 's' : ''}</p>
           {/if}
         </CardContent>
@@ -504,7 +536,7 @@
           <p class="py-8 text-center text-sm text-muted-foreground">No data for the selected window.</p>
         {:else}
           <div class="h-56">
-            <canvas bind:this={chartCanvas}></canvas>
+            <canvas bind:this={chartCanvas} data-testid="usage-chart"></canvas>
           </div>
         {/if}
 
@@ -631,7 +663,8 @@
         </CardContent>
       </Card>
 
-      <Card>
+      {#if !isKeyUser}
+      <Card data-testid="requests-by-provider">
         <CardHeader>
           <CardTitle>Requests by Provider</CardTitle>
         </CardHeader>
@@ -662,6 +695,47 @@
           {/if}
         </CardContent>
       </Card>
+      {/if}
+
+      {#if !isKeyUser}
+        <Card data-testid="requests-by-api-key" class="lg:col-span-2">
+          <CardHeader>
+            <CardTitle>Requests by API Key</CardTitle>
+          </CardHeader>
+          <CardContent class="p-0">
+            {#if (stats.by_api_key ?? []).length === 0}
+              <p class="px-6 py-4 text-sm text-muted-foreground">No data yet.</p>
+            {:else}
+              <div class="overflow-x-auto">
+                <table class="w-full text-sm">
+                  <thead>
+                    <tr class="border-b bg-muted/50 text-left text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                      <th class="px-4 py-3">API Key</th>
+                      <th class="px-4 py-3 text-right">Requests</th>
+                      <th class="px-4 py-3 text-right">Avg Latency</th>
+                      <th class="px-4 py-3 text-right">Errors</th>
+                      <th class="px-4 py-3 text-right">Tokens</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {#each stats.by_api_key as row (row.api_key_id || row.api_key_name)}
+                      <tr class="border-b last:border-0 hover:bg-muted/30">
+                        <td class="max-w-[180px] px-4 py-3 font-medium" title={row.api_key_name}>
+                          <div class="truncate">{row.api_key_name}</div>
+                        </td>
+                        <td class="px-4 py-3 text-right">{row.request_count.toLocaleString()}</td>
+                        <td class="px-4 py-3 text-right">{row.avg_latency_ms.toFixed(0)}ms</td>
+                        <td class="px-4 py-3 text-right">{row.error_count}</td>
+                        <td class="px-4 py-3 text-right">{row.total_tokens.toLocaleString()}</td>
+                      </tr>
+                    {/each}
+                  </tbody>
+                </table>
+              </div>
+            {/if}
+          </CardContent>
+        </Card>
+      {/if}
     </div>
   {:else if !loading && !error}
     <p class="text-sm text-muted-foreground">No data available.</p>

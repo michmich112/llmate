@@ -11,8 +11,8 @@ import (
 	"strings"
 	"time"
 
-	_ "modernc.org/sqlite"
 	_ "github.com/tursodatabase/libsql-client-go/libsql"
+	_ "modernc.org/sqlite"
 
 	"github.com/llmate/gateway/internal/models"
 )
@@ -58,10 +58,17 @@ func openDB(driver, dbPath, legacyPath string) (*sql.DB, error) {
 		// _time_format=sqlite instructs modernc.org/sqlite to store time.Time
 		// values in "2006-01-02 15:04:05.999999999-07:00" format, which SQLite's
 		// strftime() and datetime() functions can parse natively.
+		//
+		// busy_timeout and foreign_keys are per-connection. Putting them in the
+		// DSN as _pragma applies them to every pooled connection; a one-shot
+		// db.Exec("PRAGMA ...") only affects whichever connection happens to
+		// run it, so concurrent writers (request-log persist vs admin config)
+		// would get immediate SQLITE_BUSY.
+		const sqliteQuery = "_time_format=sqlite&_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)"
 		if dbPath == ":memory:" {
-			dsn = "file::memory:?_time_format=sqlite"
+			dsn = "file::memory:?" + sqliteQuery
 		} else {
-			dsn = "file:" + dbPath + "?_time_format=sqlite"
+			dsn = "file:" + dbPath + "?" + sqliteQuery
 		}
 	case "libsql":
 		if dbPath == ":memory:" {
@@ -347,4 +354,3 @@ func scanProvider(scan func(...any) error) (models.Provider, error) {
 	p.UpdatedAt = updatedAt.Time
 	return p, nil
 }
-
